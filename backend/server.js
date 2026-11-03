@@ -13,6 +13,7 @@ app.use('/api/lists', require('./routes/lists'));
 app.use('/api/team', require('./routes/team'));
 app.use('/api/rules', require('./routes/rules'));
 app.use('/api/queue', require('./routes/queue'));
+app.use('/api/disposition', require('./routes/disposition'));
 
 // Express 5 sends rejected async handlers here.
 app.use((err, req, res, next) => {

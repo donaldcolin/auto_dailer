@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.CallLog
+import android.provider.Settings
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import expo.modules.kotlin.exception.Exceptions
@@ -13,6 +14,8 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 class DialerModule : Module() {
   private var callback: TelephonyCallback? = null
+  private var dialing = false // a call we placed is in progress
+  private var sawOffhook = false
 
   private val context: Context
     get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
@@ -29,7 +32,19 @@ class DialerModule : Module() {
     Function("placeCall") { number: String ->
       val intent = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      dialing = true
+      sawOffhook = false
       context.startActivity(intent)
+    }
+
+    // Android only lets a background app return to the front with "Display over other apps".
+    Function("canBringToFront") { Settings.canDrawOverlays(context) }
+
+    Function("openBringToFrontSettings") {
+      context.startActivity(
+        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      )
     }
 
     // shortcut: Android 12+ (API 31) only; add a PhoneStateListener fallback if a pilot phone runs Android 10–11.
@@ -41,6 +56,13 @@ class DialerModule : Module() {
             TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
             TelephonyManager.CALL_STATE_RINGING -> "RINGING"
             else -> "IDLE"
+          }
+          if (dialing && name == "OFFHOOK") sawOffhook = true
+          // Done natively: React Native pauses JS timers while the phone app is on top,
+          // and some phone apps (OnePlus) stay on screen when the caller hangs up.
+          if (dialing && sawOffhook && name == "IDLE") {
+            dialing = false
+            bringToFront()
           }
           sendEvent("onCallState", mapOf("state" to name))
         }
@@ -75,6 +97,16 @@ class DialerModule : Module() {
     OnDestroy {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callback?.let { telephony.unregisterTelephonyCallback(it) }
       callback = null
+    }
+  }
+
+  private fun bringToFront() {
+    val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
+    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+    try {
+      context.startActivity(launch)
+    } catch (e: Exception) {
+      // Blocked without the overlay permission; the app catches up when the user opens it.
     }
   }
 }

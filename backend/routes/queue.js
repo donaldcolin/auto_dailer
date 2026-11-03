@@ -4,7 +4,7 @@ const { getQueue } = require('../services/queue');
 
 const router = express.Router();
 
-// The caller's leads for their rule right now. TLs and managers can dial too, so any login works.
+// The caller's leads to dial now: all their own leads, or a TL rule's List. Any login can dial.
 router.get('/', requireAuth, async (req, res) => {
   try {
     res.json(await getQueue(req.profile));

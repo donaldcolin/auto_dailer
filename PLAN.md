@@ -65,11 +65,12 @@ Endpoints:
 | `GET /api/team` | TL, manager | The caller's groups (all for a manager), each with its TL and active associates. |
 | `PUT/DELETE /api/team/:group/lead` | manager | Set or clear who leads a group. |
 | `GET/POST/PUT/DELETE /api/rules` | TL, manager | Rules in the caller's scope. A TL can target their groups and the associates in them; a manager can target anyone. Times are IST. |
-| `GET /api/queue` | any login | Leads for the active rule, owned by the caller, minus leads dialed under this rule today. |
+| `GET /api/queue` | any login | `{source: 'own'|'rule', rule, pushedCount, leads}`. **Pushed leads first** (LSQ activity 283 "Auto Dialer" on a lead the caller owns, not dialed since the push, last 7 days, oldest first, closed stages included), then: No active rule → every lead the caller owns (`Leads.Get` by `OwnerId`), except stages Signup Done, Payment Done, Customer, Disqualified. Active rule → that List's leads owned by the caller. Minus leads dialed today (under the same rule, or with no rule). |
 | `POST /disposition` | associate | `{prospectId, phone, outcome, talkSeconds, startedAt, note?}` → `dial_attempts` row (and an LSQ stage change, if the outcome list needs one). No call activity: Callyzer already logs every SIM call to LSQ. |
 
 **Queue logic** (`GET /api/queue`):
-1. Find the associate's active rule (associate rule beats group rule; latest start time ≤ now; today's weekday in `days`).
+0. Pushed leads: `ProspectActivity.svc/RetrieveRecentlyModified` with `ActivityEvent: 283` (cached 60 s for everyone), joined to the caller's owned leads, minus leads with a `dial_attempts` row after the push (`services/pushed.js`). They go first and aren't repeated below.
+1. Find the associate's active rule (associate rule beats group rule; latest start time ≤ now; today's weekday in `days`). **No rule → read the caller's own leads with `Leads.Get` (OwnerId, newest first, cached 5 min per user) and skip to step 4.**
 2. Read that List's leads. **Cache per List for about 5 minutes**, so one LSQ read serves the whole team. Page through all of them (PageSize 200).
 3. Keep leads with `OwnerId == lsq_user_id`.
 4. Drop leads with a `dial_attempts` row under this rule today. This covers Callyzer's sync delay before LSQ's own fields (e.g. Total Connects) catch up.
@@ -102,22 +103,24 @@ Queue empty → refetch → still empty → "All done for now" (poll /queue ever
 
 Screens: **Login**, and **Dialer**: current lead card (name, stage), Start/Pause/Stop, Skip with a 5 s countdown, and outcome buttons after a connected call.
 
-Background: a **foreground service** with a notification keeps the loop alive while the call screen is on top.
+Background: when a call we placed ends (IDLE after OFFHOOK), the Kotlin module brings the app back to the front itself. React Native pauses JS timers while the phone app is on top, and the OnePlus phone app stays on screen when the caller hangs up. Android only allows this with **"Display over other apps"** (`SYSTEM_ALERT_WINDOW`), which the app asks for once. A foreground service is still planned for long sessions (step 6).
 
 **Recording:** `placeCall` must use the system phone app (`ACTION_CALL` to the default dialer), never our own in-call UI or a VoIP path. The phone's auto-record and Callyzer only see calls that go through the normal phone app.
 
-Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `FOREGROUND_SERVICE`, `POST_NOTIFICATIONS`. Ship as an **internal APK**. Play blocks `READ_CALL_LOG` for apps that aren't the default dialer.
+Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `SYSTEM_ALERT_WINDOW` (later `FOREGROUND_SERVICE`, `POST_NOTIFICATIONS`). Ship as an **internal APK**. Play blocks `READ_CALL_LOG` for apps that aren't the default dialer.
 
 ## Build order (each step is usable on its own)
 0. **Phone test (1 day, throwaway):** an Expo dev build with one "Call" button and a hard-coded team number, on Donald's OnePlus Nord (Callyzer installed, auto-record on). Pass when: the call goes out on the Airtel SIM, the call-log duration is right (0 s when unanswered), the phone saves a recording, and Callyzer uploads it and logs the call to LSQ. A failure here changes the plan.
    **Result (2026-11-03, OnePlus CPH2805, Android 16, Jio SIM):** ✅ calls go out through the system phone app; ✅ call log gives 0 s for an unanswered call and the right talk time for answered ones (23 s, 11 s); ✅ the phone records calls placed by our app, saved to `Music/Recordings/Call Recordings/`, once "Record all calls" is on (it was off; setting `oplus_customize_all_call_audio_record`); no crashes. **Still to check:** Airtel SIM choice on a dual-SIM phone, and Callyzer uploading the recording and logging to LSQ, both on a counsellor's phone. Phone setup must include turning on "Record all calls". On OnePlus/Oppo phones the app could read that global setting at Start and refuse to dial while it's off; other brands use other settings.
 1. ✅ Backend: Supabase token check, LSQ user link (role, groups), `/api/me`, `/api/lists`.
 2. ✅ Backend: `team_leads`, `rules`, `dial_attempts`; `/api/team`, `/api/rules` with scope checks, `/api/queue` (5-min shared List cache, owner filter, dialed-today filter).
+   **Default queue = all own leads (added 2026-11-03):** live `/api/queue` for donald.colin@kalvium.com with no rules returned all 9 leads he owns in LSQ: 0 missing, 0 extra, 0 duplicates. After skipping closed stages: 6 (4 New Lead, 2 School Prospect), 0 closed-stage leads. LSQ stage options: New Lead, School Prospect, Qualified Lead, Prospect Lead, Counselling Done, Signup Done, KNET, HR New Lead, Registered, Customer, Disqualified (Payment Done exists on leads but isn't in the options list).
    **Tested 2026-11-03:** 17 jest tests, plus 26/26 end-to-end checks with the live server against the real Supabase project and real LSQ, as manager, as TL and as associate (same login, access switched in the DB), test rows cleaned up. The test List was empty that day, so the queue returned the right rule with 0 leads; the lead read itself was checked on a 200-lead page of All Leads.
 3. Dashboard: the rules screen, embedded in an LSQ tab.
-4. Android: login, then a lead list with a "Call" button (single dial through the Kotlin module), plus call-log talk time.
-5. Android: state machine, Start/Pause/Stop, auto No answer, outcome buttons → `/disposition` (once the outcome list is decided).
-6. Foreground service, countdown/skip, offline outcome queue.
+4. ✅ Android: Google sign-in (Supabase OAuth in the phone's browser, PKCE, redirect `dialer://auth`), dialer screen on `/api/queue`, and `POST /api/disposition`.
+5. ✅ Android: progressive loop: 5 s countdown with Skip → `placeCall` → call log talk time → 0 s = auto "no answer", >0 s = outcome buttons → next lead; Pause / Stop / "Call ended" fallback. Outcomes are placeholders (interested, not_interested, call_back, wrong_number, skipped) until the real list is decided.
+   **Tested 2026-11-03 on the OnePlus (Jio SIM) with Donald's test leads:** after two fixes (bring the app to front natively; never drop the call-ended signal when it races the app-resumed check), 3/3 calls in the last run were saved with the right outcome and talk time, including caller hang-up, callee hang-up and no answer. Earlier runs showed the stalls those fixes address. For testing, the phone reaches the Mac's backend with `adb reverse tcp:4000 tcp:4000`.
+6. Foreground service, offline outcome queue, the OnePlus auto-record check at Start.
 
 ## Verification
 - Backend unit tests (`cd backend && npx jest`): active-rule selection (associate beats group, latest start ≤ now, weekday), owner filter, "already dialed under this rule" filter, a TL can't write a rule for another group.
@@ -128,10 +131,16 @@ Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `FOREGROUND_SERV
 - Dashboard opens inside the LSQ tab, and a TL sees only their team.
 - **Recording:** for every connected test call, Callyzer shows a recording (`call_recording_url` set in Callyzer's `/call-log/history`, or visible in the Callyzer dashboard). Test on each phone model in the pilot. Any connected call without a recording blocks the pilot.
 
+## Pushed leads (2026-11-03)
+Manager's proposal, replacing the in-tab filter builder: TLs push leads by adding activity 283 in LSQ. **Tested live:** Donald's push on "Akhila test jose test" came first in his queue with `pushed: true`, and after a dial saved via `/api/disposition` it left the queue (`pushedCount` 0). 25 jest tests. The custom-tab dashboard is now optional, for rules on Dynamic Lists only.
+
 ## Open (blocks the step named)
+- Activity 283 fields (Assign To, Call After, Priority, Note, Status): the manager adds them in LSQ, then read by schema name in `services/pushed.js`.
+- Can TLs bulk-add the activity from Manage Leads, and what's the per-action limit?
 - Outcome list and stage changes → step 5.
 - Retries (Donald + manager) → after step 5. Until then, TLs use callback Lists.
-- Google OAuth client (Web) + Supabase Google provider → before step 3. An Android OAuth client → step 4.
+- Google OAuth client: **temporarily in Donald's personal Google Cloud project** ("Autodailer", External, Testing mode, test users added by hand). Move it to a Kalvium-owned project (Internal) before the pilot; only the Client ID/secret in Supabase change.
+- Hosting the backend on HTTPS (the app's `usesCleartextTraffic` is a test-only shortcut).
 - A dialer List with leads in it, for a queue test with real leads (the test List is "yesterday"-based and empty on Mondays).
 
 ## Out of scope

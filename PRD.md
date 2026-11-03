@@ -9,7 +9,7 @@ We will build a dialer system with two parts:
 1. **An Android app** for associates (counsellors). It dials their LeadSquared leads one after another from their own Airtel SIM and writes every call outcome back to LeadSquared.
 2. **A rules dashboard** for team leads and managers, shown as a custom tab inside LeadSquared. Here a TL decides which leads each associate dials, and when. For example: "9 AM: today's fresh leads", "4 PM: leads in the callback stage".
 
-The operations team keeps assigning leads to associates in LeadSquared every day, as today. The dialer never assigns or moves leads between people. TLs only decide **which filter** each associate works on at which time, and each associate gets only the matching leads they own.
+The operations team keeps assigning leads to associates in LeadSquared every day, as today. The dialer never assigns or moves leads between people. **By default, each associate's queue is all the leads they own**, fetched from LeadSquared automatically. TLs can add rules on top: **which filter** an associate works on at which time. A rule narrows the queue to the matching leads the associate owns.
 
 ## Problem and goals
 
@@ -43,14 +43,19 @@ Hourly call reports are out of scope: the existing team reports already cover th
 
 **Associate**
 1. As an associate, I sign in once and press Start.
-2. The app dials, one by one, the leads I own that match my current rule, until there are none left.
+2. The app dials, one by one, all the leads I own, or, while my TL has a rule running, the ones that match it, until there are none left.
 3. I talk on the normal phone screen when a call connects.
 4. I tap one outcome after a connected call, and it shows in LeadSquared. Calls with 0 seconds of talk time are logged as No answer by themselves.
 5. I can pause, skip a lead, or stop.
 
+## How TLs push leads (main mechanism, from 2026-11-03)
+A TL filters leads in LeadSquared the way they already do, selects them, and adds the custom activity **Auto Dialer** (event 283). Within about a minute, each pushed lead goes to the **top of its owner's queue**, oldest push first, even if its stage is closed. It leaves the queue once the associate dials it after the push. Pushing it again queues it again. Pushes older than 7 days are ignored. The activity stays on the lead's timeline as a record of who pushed what.
+
+Planned activity fields (manager to add in LSQ): **Assign To** (call by someone other than the owner), **Call After** (date-time), **Priority**, **Note for Caller**, **Status** (Cancelled removes it). Until they exist, a push goes to the owner, to be called now.
+
 ## How rules work
 
-A **rule** is: who (one associate, or a whole team) + which List + from what time.
+**No rule = all your own leads,** except converted or ruled-out ones (Signup Done, Payment Done, Customer, Disqualified). A rule is optional: who (one associate, or a whole team) + which List + from what time. While a rule is active, the queue is that List's leads instead.
 
 - **Lists are LeadSquared's own dynamic Lists.** TLs build the filter in LeadSquared's filter screen and save it as a Dynamic List named `Dialer – …`. The dashboard only offers Lists that are dynamic and start with `Dialer –`, so the other ~2,350 Lists don't clutter the picker.
 - **The filter always matches LeadSquared exactly**, because LeadSquared evaluates it. Every filter LeadSquared supports works, including activity conditions.
@@ -75,7 +80,7 @@ An associate-level rule wins over a team-level rule at the same time.
 | Android app, shared as an internal APK | iPhone (iOS doesn't allow auto-dialing) |
 | Rules dashboard as a LeadSquared custom tab | Building filters inside our dashboard (LeadSquared does it) |
 | Role-based access from LeadSquared sales groups | Reports and live stats (existing reports cover it) |
-| Queue from dynamic Lists, filtered by lead owner | Assigning or moving leads (the operations team does it) |
+| Queue of the associate's own leads; TL rules narrow it to a dynamic List | Assigning or moving leads (the operations team does it) |
 | Start, Pause, Stop, Skip | Predictive dialing (needs cloud telephony) |
 | Automatic No answer for 0-second calls | Recording inside our app (the phone's recorder + Callyzer already do it) |
 | Outcome buttons, written back to LeadSquared | Play Store release |
@@ -98,7 +103,7 @@ An associate-level rule wins over a team-level rule at the same time.
 2. Before each dial, a 5-second countdown shows the lead's name and stage, with a Skip button.
 3. The associate talks on the normal phone call screen.
 4. Dialing keeps running with the screen locked or another app open, with a notification showing it's running.
-5. When the current rule's queue is empty, the app shows "All done for now" until the next rule starts.
+5. When the queue is empty, the app shows "All done for now" until new leads arrive or the next rule starts.
 
 **Outcomes**
 1. A call with 0 seconds of talk time is saved as No answer, with no tap needed.

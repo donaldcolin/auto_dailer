@@ -1,4 +1,8 @@
-jest.mock('../config/supabase', () => ({ auth: { getUser: jest.fn() } }));
+const inserted = [];
+jest.mock('../config/supabase', () => ({
+  auth: { getUser: jest.fn() },
+  from: () => ({ insert: async row => (inserted.push(row), { error: null }) }),
+}));
 jest.mock('../services/profile', () => ({ getProfile: jest.fn() }));
 jest.mock('../services/lsq_lists', () => ({ getDialerLists: jest.fn() }));
 jest.mock('../services/team', () => ({ withTeamLead: async p => ({ ...p, tlGroups: [] }) }));
@@ -41,4 +45,21 @@ test('/api/lists: associates are refused, managers get the dialer Lists', async 
   const res = await request(app).get('/api/lists').set('Authorization', 'Bearer t-mgr');
   expect(res.status).toBe(200);
   expect(res.body).toEqual([{ id: 'x', name: 'Dialer – Fresh' }]);
+});
+
+test('/api/disposition saves a dial for the caller and checks the body', async () => {
+  as('associate');
+  const post = body => request(app).post('/api/disposition').set('Authorization', 'Bearer t-disp').send(body);
+
+  expect((await post({ outcome: 'no_answer' })).status).toBe(400);
+  expect((await post({ prospectId: 'p1', outcome: 'maybe' })).status).toBe(400);
+  expect((await post({ prospectId: 'p1', outcome: 'interested', talkSeconds: -3 })).status).toBe(400);
+  expect((await post({ prospectId: 'p1', outcome: 'interested', startedAt: 'yesterday-ish' })).status).toBe(400);
+  expect(inserted).toHaveLength(0);
+
+  const res = await post({ prospectId: 'p1', phone: '+91-900', outcome: 'no_answer', talkSeconds: 0, startedAt: '2026-11-03T10:00:00Z' });
+  expect(res.status).toBe(201);
+  expect(inserted).toEqual([expect.objectContaining({
+    user_id: 'u1', rule_id: null, prospect_id: 'p1', outcome: 'no_answer', talk_seconds: 0, started_at: '2026-11-03T10:00:00.000Z',
+  })]);
 });
