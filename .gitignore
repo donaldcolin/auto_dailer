@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Secrets (LSQ keys, Supabase keys)
+.env
+.env.*
+!.env.example
+
+# Build outputs
+*.apk
+*.aab
+dist/
+build/
+.gradle/
+.kotlin/
+
+# OS / editor
+.DS_Store
+.claude/settings.local.json

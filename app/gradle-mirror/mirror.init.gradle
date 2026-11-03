@@ -1,0 +1,21 @@
+// Maven Central blocks this network's IP as an "open proxy" (HTTP 403).
+// Put Google's official Maven Central mirror first in every repository list.
+def MIRROR = 'https://maven-central.storage-download.googleapis.com/maven2/'
+
+def mirrorFirst = { RepositoryHandler repos ->
+  def m = repos.maven { url MIRROR; name 'centralMirror' }
+  repos.remove(m)
+  repos.addFirst(m)
+}
+
+beforeSettings { settings ->
+  mirrorFirst(settings.pluginManagement.repositories)
+  settings.pluginManagement.repositories.gradlePluginPortal()
+}
+settingsEvaluated { settings ->
+  mirrorFirst(settings.dependencyResolutionManagement.repositories)
+}
+allprojects {
+  buildscript { mirrorFirst(repositories) }
+  afterEvaluate { mirrorFirst(repositories) }
+}
