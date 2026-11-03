@@ -25,7 +25,9 @@ Associates call leads from their own Airtel SIMs. The operations team assigns le
   `{SearchParameters: {ListId, RetrieveBehaviour: "1"}, Columns: {Include_CSV: "ProspectID,FirstName,ProspectStage,OwnerId,OwnerIdName,mx_Total_Connects"}, Sorting: {ColumnName: "CreatedOn", Direction: "1"}, Paging: {PageIndex, PageSize}}`
   → `{RecordCount, Leads: [{LeadPropertyList: [{Attribute, Value}]}]}`. Returned all 13 leads of the test List. `RetrieveBehaviour` "1" recalculates the List; "0" skips the recalculation (faster).
 - `GET UserManagement.svc/Users.Get` → `[{ID, FirstName, EmailAddress, Role, StatusCode, MemberOfGroups: ["Team Ayyappan", ...]}]`. That gives us roles and teams for access control.
-- The body key is `SearchParameters`. `Parameter` fails with "missing mandatory parameter".
+- The body key is `SearchParameters`.
+- `Lists.Get` takes `&SearchText=` (name filter, server side) and `&PageIndex=` (500 per page). `SearchText=Dialer` returns only dialer Lists in one call.
+- `UserManagement.svc/User/Retrieve/ByUserId` has `ManagerUserId`, `TeamName`, but a lower limit: 15 calls per 5 s. `Parameter` fails with "missing mandatory parameter".
 
 ## Architecture
 ```
@@ -55,8 +57,8 @@ Tables:
 Endpoints:
 | Endpoint | Who | Does |
 |---|---|---|
-| `POST /auth/login` | all | Supabase email login; links the LSQ user by email; stores role and groups. |
-| `GET /lists` | TL, manager | LSQ Lists that are `dynamic` and named `Dialer – …`, for the picker. |
+| `GET /api/me` | all | Called after Supabase email login (done in the app/dashboard). Links the LSQ user by email on first call; re-reads role and groups daily. 403 if no active LSQ user has that email. |
+| `GET /api/lists` | TL, manager | LSQ Lists that are `dynamic` and named `Dialer – …`, for the picker. Uses `Lists.Get?SearchText=Dialer`. |
 | `GET /team` | TL, manager | Associates the caller may manage: their sales groups, or everyone for a manager. |
 | `GET/POST/PUT/DELETE /rules` | TL, manager | Rules for the caller's teams. The server checks every write against the caller's groups. |
 | `GET /queue` | associate | Leads for the active rule, owned by the caller, minus leads dialed under this rule today. |
@@ -105,7 +107,7 @@ Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `FOREGROUND_SERV
 ## Build order (each step is usable on its own)
 0. **Phone test (1 day, throwaway):** an Expo dev build with one "Call" button and a hard-coded team number, on Donald's OnePlus Nord (Callyzer installed, auto-record on). Pass when: the call goes out on the Airtel SIM, the call-log duration is right (0 s when unanswered), the phone saves a recording, and Callyzer uploads it and logs the call to LSQ. A failure here changes the plan.
    **Result (2026-11-03, OnePlus CPH2805, Android 16, Jio SIM):** ✅ calls go out through the system phone app; ✅ call log gives 0 s for an unanswered call and the right talk time for answered ones (23 s, 11 s); ✅ the phone records calls placed by our app, saved to `Music/Recordings/Call Recordings/`, once "Record all calls" is on (it was off; setting `oplus_customize_all_call_audio_record`); no crashes. **Still to check:** Airtel SIM choice on a dual-SIM phone, and Callyzer uploading the recording and logging to LSQ, both on a counsellor's phone. Phone setup must include turning on "Record all calls". On OnePlus/Oppo phones the app could read that global setting at Start and refuse to dial while it's off; other brands use other settings.
-1. Backend: Supabase login, LSQ user sync (role, groups), `/lists` with the 500-List paging fixed. Test with curl.
+1. ✅ Backend: Supabase token check, LSQ user link (role, groups), `/api/me`, `/api/lists` (`backend/`, 7 jest tests; LSQ parts run against real LSQ). Supabase parts wait for the new project + `backend/supabase/001_users.sql`.
 2. Backend: `rules` table, `/rules` with group checks, `/queue` (List read + cache + owner filter). Test with curl against the test List.
 3. Dashboard: the rules screen, embedded in an LSQ tab.
 4. Android: login, then a lead list with a "Call" button (single dial through the Kotlin module), plus call-log talk time.
@@ -124,8 +126,7 @@ Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `FOREGROUND_SERV
 ## Open (blocks the step named)
 - Outcome list and stage changes → step 5.
 - Retries (Donald + manager) → after step 5. Until then, TLs use callback Lists.
-- Paging/search for `Lists.Get` beyond 500 → step 1.
-- Which LSQ roles are TL / manager → step 2.
+- How to tell who is a TL → step 2. LSQ roles: `Sales_Manager` (8 active) and `Administrator` (13) = manager. TLs are plain `Sales_User`s; every associate "reports to" a Sales_Manager, not a TL. Group names carry the TL's name ("Team Ayyappan"), but name matching is fragile.
 - What the LSQ custom tab can pass for login → step 3.
 
 ## Out of scope
