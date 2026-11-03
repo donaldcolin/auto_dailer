@@ -27,13 +27,15 @@ Associates call leads from their own Airtel SIMs. The operations team assigns le
 - `GET UserManagement.svc/Users.Get` → `[{ID, FirstName, EmailAddress, Role, StatusCode, MemberOfGroups: ["Team Ayyappan", ...]}]`. That gives us roles and teams for access control.
 - The body key is `SearchParameters`.
 - `Lists.Get` takes `&SearchText=` (name filter, server side) and `&PageIndex=` (500 per page). `SearchText=Dialer` returns only dialer Lists in one call.
-- `UserManagement.svc/User/Retrieve/ByUserId` has `ManagerUserId`, `TeamName`, but a lower limit: 15 calls per 5 s. `Parameter` fails with "missing mandatory parameter".
+- `UserManagement.svc/User/Retrieve/ByUserId` has `ManagerUserId`, `TeamName`, but a lower limit: 15 calls per 5 s.
+- LSQ roles: `Sales_Manager` (8 active) and `Administrator` (13) → manager access. TLs are plain `Sales_User`s, and every associate "reports to" a Sales_Manager, so managers pick TLs.
+- A List's first read costs one LSQ call per 200 leads (~0.8 s each), so a 5,000-lead List takes ~20 s cold. Keep dialer Lists scoped (e.g. "assigned today").
 
 ## Architecture
 ```
 Android app (associate, Airtel SIM)        Backend (Node/Express + Supabase)                 LeadSquared
- ├ Login ───────────── POST /auth/login ─▶ map email → LSQ user (role, groups) ◀── Users.Get (daily sync)
- ├ Start ───────────── GET /queue ───────▶ active rule → List → leads ◀───────────── Leads/Retrieve/BySearchParameter
+ ├ Google login ────── GET /api/me ──────▶ map email → LSQ user (role, groups) ◀── Users.Get (daily sync)
+ ├ Start ───────────── GET /api/queue ───▶ active rule → List → leads ◀───────────── Leads/Retrieve/BySearchParameter
  │                                         keep OwnerId == me, drop already dialed
  ├ dials via SIM (ACTION_CALL)
  ├ call state + call-log duration
@@ -43,14 +45,15 @@ Rules dashboard (React, LSQ custom tab) ─ /rules ───┘                 
 ```
 
 ### 1. Backend (Node + Express + Supabase)
-A **new Supabase project**, separate from the QC app's.
+A **new Supabase project**, separate from the QC app's. Login is **Google** (Workspace, OAuth consent screen "Internal") through Supabase Auth; the backend only sees the Supabase token and links by email. Schema: `backend/supabase/001_users.sql`, `002_rules.sql`.
 
 Copy from the QC repo, don't rewrite:
 - `Quality Control/node_backend/config/lsq.js`: `lsqClient` (5 req/s org limiter) and `lsqUrl`. Copy as-is.
 - `Quality Control/node_backend/middleware/auth.js`: `verifySupabaseToken`.
 
 Tables:
-- `users(id, email, lsq_user_id, lsq_role, groups text[], synced_at)`. Filled at login and refreshed daily from `Users.Get`.
+- `users(id, email, name, lsq_user_id, lsq_role, access, groups text[], synced_at)`. Filled at first `/api/me` and refreshed daily from `Users.Get`.
+- `team_leads(group_name, lsq_user_id, set_by, updated_at)`. Managers pick TLs: LSQ has no TL field.
 - `rules(id, target_type 'user'|'group', target_id, list_id, list_name, start_time, days int[], created_by, updated_at)`.
 - `dial_attempts(id, user_id, rule_id, prospect_id, phone, outcome, talk_seconds, started_at, note)`.
 
@@ -59,12 +62,13 @@ Endpoints:
 |---|---|---|
 | `GET /api/me` | all | Called after Supabase email login (done in the app/dashboard). Links the LSQ user by email on first call; re-reads role and groups daily. 403 if no active LSQ user has that email. |
 | `GET /api/lists` | TL, manager | LSQ Lists that are `dynamic` and named `Dialer – …`, for the picker. Uses `Lists.Get?SearchText=Dialer`. |
-| `GET /team` | TL, manager | Associates the caller may manage: their sales groups, or everyone for a manager. |
-| `GET/POST/PUT/DELETE /rules` | TL, manager | Rules for the caller's teams. The server checks every write against the caller's groups. |
-| `GET /queue` | associate | Leads for the active rule, owned by the caller, minus leads dialed under this rule today. |
+| `GET /api/team` | TL, manager | The caller's groups (all for a manager), each with its TL and active associates. |
+| `PUT/DELETE /api/team/:group/lead` | manager | Set or clear who leads a group. |
+| `GET/POST/PUT/DELETE /api/rules` | TL, manager | Rules in the caller's scope. A TL can target their groups and the associates in them; a manager can target anyone. Times are IST. |
+| `GET /api/queue` | any login | Leads for the active rule, owned by the caller, minus leads dialed under this rule today. |
 | `POST /disposition` | associate | `{prospectId, phone, outcome, talkSeconds, startedAt, note?}` → `dial_attempts` row (and an LSQ stage change, if the outcome list needs one). No call activity: Callyzer already logs every SIM call to LSQ. |
 
-**Queue logic** (`GET /queue`):
+**Queue logic** (`GET /api/queue`):
 1. Find the associate's active rule (associate rule beats group rule; latest start time ≤ now; today's weekday in `days`).
 2. Read that List's leads. **Cache per List for about 5 minutes**, so one LSQ read serves the whole team. Page through all of them (PageSize 200).
 3. Keep leads with `OwnerId == lsq_user_id`.
@@ -77,7 +81,7 @@ Endpoints:
 - One screen: the team's associates as rows. Each row shows today's rules in time order, with add/edit/delete. A team-wide row sits on top.
 - Rule form: target, List (dropdown from `/lists`), start time, days.
 - **Embedding in LSQ:** add it as a custom tab or menu item in LSQ. The Express app sends `Content-Security-Policy: frame-ancestors https://*.leadsquared.com` so the iframe works.
-- **Login in the tab:** open question. Default: TLs sign in once with Supabase email inside the iframe. Never trust a user id passed in the URL.
+- **Login in the tab:** Google blocks its sign-in page inside iframes, so "Sign in with Google" opens a popup and hands the session back. Never trust a user id passed in the URL.
 
 ### 3. Android app (React Native, Expo dev build, one small Kotlin module)
 The Kotlin module (about 100 lines) does three things:
@@ -107,15 +111,16 @@ Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `FOREGROUND_SERV
 ## Build order (each step is usable on its own)
 0. **Phone test (1 day, throwaway):** an Expo dev build with one "Call" button and a hard-coded team number, on Donald's OnePlus Nord (Callyzer installed, auto-record on). Pass when: the call goes out on the Airtel SIM, the call-log duration is right (0 s when unanswered), the phone saves a recording, and Callyzer uploads it and logs the call to LSQ. A failure here changes the plan.
    **Result (2026-11-03, OnePlus CPH2805, Android 16, Jio SIM):** ✅ calls go out through the system phone app; ✅ call log gives 0 s for an unanswered call and the right talk time for answered ones (23 s, 11 s); ✅ the phone records calls placed by our app, saved to `Music/Recordings/Call Recordings/`, once "Record all calls" is on (it was off; setting `oplus_customize_all_call_audio_record`); no crashes. **Still to check:** Airtel SIM choice on a dual-SIM phone, and Callyzer uploading the recording and logging to LSQ, both on a counsellor's phone. Phone setup must include turning on "Record all calls". On OnePlus/Oppo phones the app could read that global setting at Start and refuse to dial while it's off; other brands use other settings.
-1. ✅ Backend: Supabase token check, LSQ user link (role, groups), `/api/me`, `/api/lists` (`backend/`, 7 jest tests; LSQ parts run against real LSQ). Supabase parts wait for the new project + `backend/supabase/001_users.sql`.
-2. Backend: `rules` table, `/rules` with group checks, `/queue` (List read + cache + owner filter). Test with curl against the test List.
+1. ✅ Backend: Supabase token check, LSQ user link (role, groups), `/api/me`, `/api/lists`.
+2. ✅ Backend: `team_leads`, `rules`, `dial_attempts`; `/api/team`, `/api/rules` with scope checks, `/api/queue` (5-min shared List cache, owner filter, dialed-today filter).
+   **Tested 2026-11-03:** 17 jest tests, plus 26/26 end-to-end checks with the live server against the real Supabase project and real LSQ, as manager, as TL and as associate (same login, access switched in the DB), test rows cleaned up. The test List was empty that day, so the queue returned the right rule with 0 leads; the lead read itself was checked on a 200-lead page of All Leads.
 3. Dashboard: the rules screen, embedded in an LSQ tab.
 4. Android: login, then a lead list with a "Call" button (single dial through the Kotlin module), plus call-log talk time.
 5. Android: state machine, Start/Pause/Stop, auto No answer, outcome buttons → `/disposition` (once the outcome list is decided).
 6. Foreground service, countdown/skip, offline outcome queue.
 
 ## Verification
-- Backend unit tests: active-rule selection (associate beats group, latest start ≤ now, weekday), owner filter, "already dialed under this rule" filter, a TL can't write a rule for another group.
+- Backend unit tests (`cd backend && npx jest`): active-rule selection (associate beats group, latest start ≤ now, weekday), owner filter, "already dialed under this rule" filter, a TL can't write a rule for another group.
 - curl `/queue` as two associates on the same team List: each gets only their own leads, and the two together equal the List.
 - Change a rule's start time to one minute ahead: `/queue` switches List when that minute passes.
 - Large List: time a full read of a List with several thousand leads, and count the LSQ calls it uses.
@@ -126,8 +131,8 @@ Permissions: `CALL_PHONE`, `READ_PHONE_STATE`, `READ_CALL_LOG`, `FOREGROUND_SERV
 ## Open (blocks the step named)
 - Outcome list and stage changes → step 5.
 - Retries (Donald + manager) → after step 5. Until then, TLs use callback Lists.
-- How to tell who is a TL → step 2. LSQ roles: `Sales_Manager` (8 active) and `Administrator` (13) = manager. TLs are plain `Sales_User`s; every associate "reports to" a Sales_Manager, not a TL. Group names carry the TL's name ("Team Ayyappan"), but name matching is fragile.
-- What the LSQ custom tab can pass for login → step 3.
+- Google OAuth client (Web) + Supabase Google provider → before step 3. An Android OAuth client → step 4.
+- A dialer List with leads in it, for a queue test with real leads (the test List is "yesterday"-based and empty on Mondays).
 
 ## Out of scope
 - Reports and live stats (existing team reports cover them).

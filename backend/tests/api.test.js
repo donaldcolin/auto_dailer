@@ -1,6 +1,7 @@
 jest.mock('../config/supabase', () => ({ auth: { getUser: jest.fn() } }));
 jest.mock('../services/profile', () => ({ getProfile: jest.fn() }));
 jest.mock('../services/lsq_lists', () => ({ getDialerLists: jest.fn() }));
+jest.mock('../services/team', () => ({ withTeamLead: async p => ({ ...p, tlGroups: [] }) }));
 const request = require('supertest');
 const supabase = require('../config/supabase');
 const { getProfile } = require('../services/profile');

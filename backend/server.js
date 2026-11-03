@@ -10,6 +10,15 @@ app.use(express.json());
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/me', require('./routes/me'));
 app.use('/api/lists', require('./routes/lists'));
+app.use('/api/team', require('./routes/team'));
+app.use('/api/rules', require('./routes/rules'));
+app.use('/api/queue', require('./routes/queue'));
+
+// Express 5 sends rejected async handlers here.
+app.use((err, req, res, next) => {
+  console.error('[error]', err.message);
+  res.status(500).json({ error: 'Server error' });
+});
 
 if (require.main === module) {
   const port = process.env.PORT || 4000;

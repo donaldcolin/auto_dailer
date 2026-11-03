@@ -19,7 +19,7 @@ async function findActiveLsqUserByEmail(email) {
   return users.find(u => u.StatusCode === 0 && String(u.EmailAddress).toLowerCase() === target) || null;
 }
 
-// shortcut: TLs are Sales_Users in LSQ, so they map to 'associate' here; step 2 adds TL detection.
+// TLs are plain Sales_Users in LSQ; services/team.js upgrades them to 'tl' from the team_leads table.
 function accessFor(lsqRole) {
   return ['Sales_Manager', 'Administrator'].includes(lsqRole) ? 'manager' : 'associate';
 }

@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const { getProfile } = require('../services/profile');
+const { withTeamLead } = require('../services/team');
 
 const USER_CACHE_TTL_MS = 60 * 1000;
 const _userCache = new Map(); // token -> { user, expires }
@@ -35,7 +36,8 @@ async function requireAuth(req, res, next) {
     if (!profile) {
       return res.status(403).json({ error: `No active LeadSquared user has the email ${user.email}` });
     }
-    req.profile = profile;
+    // TL status is read on every request so a manager's change applies at once.
+    req.profile = await withTeamLead(profile);
     return next();
   } catch (err) {
     console.error('[auth]', err.message);
