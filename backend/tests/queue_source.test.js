@@ -30,8 +30,14 @@ const PUSHES = [
 let owned = [];
 let listRows = [];
 let ownedPagesRead = 0;
+let byIdsCalls = 0;
+let pushes = PUSHES;
 lsqClient.post.mockImplementation(async (url, body) => {
-  if (url.includes('RetrieveRecentlyModified')) return { data: { ProspectActivities: PUSHES } };
+  if (url.includes('RetrieveRecentlyModified')) return { data: { ProspectActivities: pushes } };
+  if (url.includes('Retrieve/ByIds')) {
+    byIdsCalls++;
+    return { data: { Leads: body.SearchParameters.LeadIds.map(id => PUSHED_LEADS[id]).filter(Boolean) } };
+  }
   if (url.includes('Leads.Get')) {
     ownedPagesRead++;
     const { PageIndex, PageSize } = body.Paging;
@@ -41,14 +47,12 @@ lsqClient.post.mockImplementation(async (url, body) => {
 });
 // Pushed leads are read one by one; both belong to L3 (old enough to be outside any default queue).
 const PUSHED_LEADS = {
+  ...Object.fromEntries(Array.from({ length: 67 }, (_, i) => [`many${i}`, { ProspectID: `many${i}`, FirstName: `M${i}`, OwnerId: 'L8', Mobile: String(i) }])),
   'pushed-new': { ProspectID: 'pushed-new', FirstName: 'New', OwnerId: 'L3', Mobile: '2', ProspectStage: 'New Lead' },
   'pushed-closed': { ProspectID: 'pushed-closed', FirstName: 'Closed', OwnerId: 'L3', Mobile: '3', ProspectStage: 'Customer' },
 };
-lsqClient.get.mockImplementation(async (url) => {
-  const id = decodeURIComponent(url.split('&id=')[1]);
-  return { data: PUSHED_LEADS[id] ? [PUSHED_LEADS[id]] : [] };
-});
-beforeEach(() => { mockCalls.length = 0; mockDialRows = []; owned = []; listRows = []; ownedPagesRead = 0; });
+
+beforeEach(() => { mockCalls.length = 0; mockDialRows = []; owned = []; listRows = []; ownedPagesRead = 0; byIdsCalls = 0; pushes = PUSHES; });
 
 test('no rule: every lead the caller owns, minus closed stages and ones dialed today', async () => {
   activeRuleFor.mockResolvedValue(null);
@@ -148,5 +152,32 @@ test('HR form by email only (Donald testing): own leads, not the never-connected
   owned = [{ ProspectID: 'spoken', OwnerId: 'L7', Mobile: '1', ProspectStage: 'HR New Lead', mx_Total_Connects: '5' }];
   const q = await getQueue({ id: 'u7', email: 'donald.colin@kalvium.com', lsq_user_id: 'L7', groups: [] });
   expect(q.leads.map(l => l.prospectId)).toEqual(['spoken']);
+});
+
+test('67 pushed leads are read in one LSQ call (one call each hit the rate limit)', async () => {
+  activeRuleFor.mockResolvedValue(null);
+  pushes = Array.from({ length: 67 }, (_, i) => ({ Id: `a${i}`, RelatedProspectId: `many${i}`, CreatedOn: '2026-11-04 14:00:00' }));
+  const q = await getQueue({ id: 'u8', lsq_user_id: 'L8', groups: [] }, new Date(), { fresh: true });
+  expect(q.pushedCount).toBe(67);
+  expect(byIdsCalls).toBe(1);
+});
+
+test('if LSQ refuses the pushed leads, the normal queue still loads', async () => {
+  activeRuleFor.mockResolvedValue(null);
+  owned = [{ ProspectID: 'own1', OwnerId: 'L9', Mobile: '1', ProspectStage: 'New Lead' }];
+  const real = lsqClient.post.getMockImplementation();
+  lsqClient.post.mockImplementation(async (url, body) => {
+    if (url.includes('Retrieve/ByIds')) throw Object.assign(new Error('429'), { response: { data: { ExceptionMessage: 'API calls exceeded the limit' } } });
+    return real(url, body);
+  });
+  const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const q = await getQueue({ id: 'u9', lsq_user_id: 'L9', groups: [] }, new Date(), { fresh: true });
+    expect(q.leads.map(l => l.prospectId)).toEqual(['own1']);
+    expect(q.pushedCount).toBe(0);
+  } finally {
+    lsqClient.post.mockImplementation(real);
+    spy.mockRestore();
+  }
 });
 

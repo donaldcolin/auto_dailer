@@ -27,7 +27,7 @@ const MAX_QUEUE = 300;
 const MAX_PAGES = 10;
 
 // shortcut: per-process cache, fine with one backend instance; move to a shared store if it's scaled out.
-const _cache = new Map(); // 'list:<id>' | 'owner:<lsqUserId>' | 'pushes' | 'lead:<id>' -> { leads, expires } or { pending }
+const _cache = new Map(); // 'list:<id>' | 'owner:<lsqUserId>' | 'pushes' | 'pushed-leads' -> { leads, expires } or { pending }
 
 const istTime = s => new Date(`${s.replace(' ', 'T')}Z`) // LSQ dates are UTC "YYYY-MM-DD HH:mm:ss"
   .toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
@@ -95,10 +95,19 @@ async function readOwnedLeads(lsqUserId, keep) {
   return leads.slice(0, MAX_QUEUE);
 }
 
-// One lead by id (null if LSQ has none), for pushes: a pushed lead may be far older than the default queue reaches.
-async function readLead(id) {
-  const { data } = await lsqClient.get(`${lsqUrl('LeadManagement.svc/Leads.GetById')}&id=${encodeURIComponent(id)}`);
-  return data?.[0] ? toLead(data[0]) : null;
+// Leads by id in batches, for pushes: a pushed lead may be far older than the default queue reaches.
+// One call per lead hit LSQ's 15-calls-in-5-seconds limit at 60+ pushes (2026-11-04).
+async function readLeadsByIds(ids) {
+  const leads = [];
+  for (let i = 0; i < ids.length; i += PAGE_SIZE) {
+    const { data } = await lsqClient.post(lsqUrl('LeadManagement.svc/Leads/Retrieve/ByIds'), {
+      SearchParameters: { LeadIds: ids.slice(i, i + PAGE_SIZE) },
+      Columns: { Include_CSV: COLUMNS },
+      Paging: { PageIndex: 1, PageSize: PAGE_SIZE },
+    });
+    leads.push(...(data.Leads || []).map(toLead));
+  }
+  return leads;
 }
 
 // One LSQ read every few minutes per key; concurrent callers share it.
@@ -117,7 +126,11 @@ function cached(key, load, ttl = LIST_CACHE_MS, now = Date.now()) {
 const getListLeads = listId => cached(`list:${listId}`, () => readList(listId));
 const getOwnedLeads = profile => cached(`owner:${profile.lsq_user_id}`, () => readOwnedLeads(profile.lsq_user_id, keepByDefault(profile)));
 const getPushes = () => cached('pushes', () => fetchPushes(), PUSH_CACHE_MS);
-const getLead = id => cached(`lead:${id}`, () => readLead(id));
+// Every pushed lead (all owners), read together and shared by everyone for a minute.
+const getPushedLeadRows = () => cached('pushed-leads', async () => {
+  const ids = [...new Set((await getPushes()).map(p => p.prospectId))];
+  return ids.length ? readLeadsByIds(ids) : [];
+}, PUSH_CACHE_MS);
 
 // The caller's own leads with a phone number, minus the ones already dialed.
 function ownQueue(leads, ownerId, dialedIds) {
@@ -125,11 +138,9 @@ function ownQueue(leads, ownerId, dialedIds) {
 }
 
 // Leads a TL pushed (Auto Dialer activity) to this associate's leads, not dialed since the push.
-// shortcut: reads each pushed lead by id (cached 5 min); fine at a few pushes a week, batch it if pushes reach hundreds.
 async function getPushedLeads(profile) {
-  const all = await getPushes();
-  const leads = (await Promise.all([...new Set(all.map(p => p.prospectId))].map(getLead)))
-    .filter(l => l && l.ownerId === profile.lsq_user_id);
+  const [all, rows] = await Promise.all([getPushes(), getPushedLeadRows()]);
+  const leads = rows.filter(l => l.ownerId === profile.lsq_user_id && l.phone);
   const mine = new Set(leads.map(l => l.prospectId));
   const pushes = all.filter(p => mine.has(p.prospectId));
   if (!pushes.length) return [];
@@ -149,8 +160,7 @@ async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
   const rule = await activeRuleFor(profile, now);
   // "Refresh leads" in the app: re-read LSQ now instead of waiting out the caches (new pushes, newly assigned leads).
   if (fresh) {
-    ['pushes', `owner:${profile.lsq_user_id}`, rule && `list:${rule.list_id}`].forEach(k => k && _cache.delete(k));
-    for (const k of _cache.keys()) if (k.startsWith('lead:')) _cache.delete(k);
+    ['pushes', 'pushed-leads', `owner:${profile.lsq_user_id}`, rule && `list:${rule.list_id}`].forEach(k => k && _cache.delete(k));
   }
 
   let dialedToday = supabase.from('dial_attempts').select('prospect_id')
@@ -160,7 +170,11 @@ async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
   const [leads, { data: dialed, error }, pushed] = await Promise.all([
     rule ? getListLeads(rule.list_id) : getOwnedLeads(profile),
     dialedToday,
-    getPushedLeads(profile),
+    // Pushes are extra: if LSQ refuses that part, the caller still gets their normal queue.
+    getPushedLeads(profile).catch(err => {
+      console.error('[queue] pushes skipped:', err.response?.data?.ExceptionMessage || err.message);
+      return [];
+    }),
   ]);
   if (error) throw error;
 

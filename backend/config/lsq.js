@@ -26,6 +26,17 @@ lsqClient.interceptors.request.use(async (config) => {
   return config;
 });
 
+// Some LSQ APIs also allow only 15 calls per 5 seconds (Leads.Get, Leads.GetById…). When LSQ says so (HTTP 429),
+// wait out its window and try again, up to twice, instead of failing the caller's request.
+const RETRY_429_MS = 5500;
+lsqClient.interceptors.response.use(undefined, async (err) => {
+  const config = err.config;
+  if (err.response?.status !== 429 || !config || (config._retries || 0) >= 2) throw err;
+  config._retries = (config._retries || 0) + 1;
+  await new Promise(r => setTimeout(r, RETRY_429_MS));
+  return lsqClient(config);
+});
+
 function lsqParams() {
   const host = process.env.LSQ_API_HOST || 'https://api-in21.leadsquared.com/v2';
   const accessKey = process.env.LSQ_ACCESS_KEY;
