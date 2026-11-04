@@ -94,9 +94,12 @@ async function getPushedLeads(profile, owned) {
 /**
  * Leads a TL pushed come first. Then, by default, every lead the caller owns in LSQ
  * (minus closed stages); a TL rule active right now narrows that part to the rule's List.
+ * `fresh` skips the LSQ caches for this caller.
  */
-async function getQueue(profile, now = new Date()) {
+async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
   const rule = await activeRuleFor(profile, now);
+  // "Refresh leads" in the app: re-read LSQ now instead of waiting out the caches (new pushes, newly assigned leads).
+  if (fresh) ['pushes', `owner:${profile.lsq_user_id}`, rule && `list:${rule.list_id}`].forEach(k => k && _cache.delete(k));
 
   let dialedToday = supabase.from('dial_attempts').select('prospect_id')
     .eq('user_id', profile.id).gte('started_at', istNow(now).midnightIso);

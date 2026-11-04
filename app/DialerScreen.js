@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppState, Image, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Image, Modal, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
 import Dialer from './modules/dialer';
 import { api } from './lib/api';
 import { supabase } from './lib/supabase';
-import { Btn, colors, wordmark } from './ui';
+import { Btn, card, colors, Skeleton, Toast, wordmark } from './ui';
 
 const PERMISSIONS = [
   PermissionsAndroid.PERMISSIONS.CALL_PHONE,
@@ -60,6 +61,9 @@ export default function DialerScreen() {
   const [form, setForm] = useState(null); // the team's LSQ activity, or null
   const [values, setValues] = useState({});
   const [saving, setSaving] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [savingReason, setSavingReason] = useState(null); // the reason row just tapped, shown as "Saving…"
 
   // Event handlers outlive renders, so the loop's state lives in refs.
   const phaseRef = useRef('idle');
@@ -67,6 +71,8 @@ export default function DialerScreen() {
   const callRef = useRef(null); // { lead, ruleId, since, startedAt, sawOffhook, finishing }
   const setPhase = (p) => { phaseRef.current = p; setPhaseState(p); };
   const formRef = useRef(null);
+  const queueRef = useRef({ leads: [], rule: null, source: null });
+  const handledRef = useRef(new Set()); // prospect ids saved or skipped since the last Start
   formRef.current = form;
 
   useEffect(() => {
@@ -122,32 +128,72 @@ export default function DialerScreen() {
     return () => clearInterval(t);
   }, [phase]);
 
-  async function loadQueue() {
-    const q = await api('/api/queue');
-    setQueueInfo({ count: q.leads.length, source: q.source, rule: q.rule, upcoming: q.leads.slice(0, 5) });
-    return q;
+  // The queue as last loaded, minus the leads handled since. Moving to the next lead uses this list
+  // straight away; the server reload runs in the background (it only adds a TL's new pushes).
+  function pending() {
+    const { leads, rule, source } = queueRef.current;
+    const left = leads.filter((l) => !handledRef.current.has(l.prospectId));
+    setQueueInfo({ count: left.length, source, rule, upcoming: left.slice(0, 5) });
+    return left;
   }
+
+  // skipCache: re-read LSQ on the server too (menu → Refresh leads), so a TL's new leads show at once.
+  async function loadQueue(skipCache = false) {
+    const q = await api(skipCache ? '/api/queue?fresh=1' : '/api/queue');
+    queueRef.current = { leads: q.leads, rule: q.rule, source: q.source };
+    return pending();
+  }
+
+  async function refreshNow() {
+    setMenuOpen(false);
+    setRefreshing(true);
+    try {
+      const left = await loadQueue(true);
+      if (left.length && phaseRef.current === 'done') setPhase('idle');
+      showToast(`Leads refreshed: ${left.length} to call`);
+    } catch (e) {
+      setError(`Could not refresh: ${e.message}`);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function confirmSignOut() {
+    setMenuOpen(false);
+    Alert.alert('Sign out?', 'You can sign in again with Google.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign out', style: 'destructive', onPress: () => supabase.auth.signOut() },
+    ]);
+  }
+
+  const markHandled = (prospectId) => { handledRef.current.add(prospectId); pending(); };
 
   // Reload the list only; dialing always waits for Start.
   async function refresh() {
-    const q = await loadQueue();
-    if (q.leads.length && phaseRef.current === 'done') setPhase('idle');
+    const left = await loadQueue();
+    if (left.length && phaseRef.current === 'done') setPhase('idle');
   }
 
-  async function next() {
+  async function next(fresh = false) {
     if (pausedRef.current) { setPhase('paused'); return; }
-    setPhase('loading');
     setError(null);
-    try {
-      const q = await loadQueue();
-      if (!q.leads.length) { setLead(null); setPhase('done'); return; }
-      setLead({ ...q.leads[0], ruleId: q.rule?.id || null });
-      setCountdown(COUNTDOWN_SEC);
-      setPhase('countdown');
-    } catch (e) {
-      setError(e.message);
-      setPhase('idle');
+    let left = pending();
+    if (fresh || !left.length) {
+      setPhase('loading');
+      try {
+        left = await loadQueue();
+      } catch (e) {
+        setError(e.message);
+        setPhase('idle');
+        return;
+      }
+    } else {
+      loadQueue().catch(() => {});
     }
+    if (!left.length) { setLead(null); setPhase('done'); return; }
+    setLead({ ...left[0], ruleId: queueRef.current.rule?.id || null });
+    setCountdown(COUNTDOWN_SEC);
+    setPhase('countdown');
   }
 
   function dial() {
@@ -204,12 +250,14 @@ export default function DialerScreen() {
         body: { prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId, activity },
       });
       callRef.current = null;
+      markHandled(l.prospectId);
       setError(null);
       return true;
     } catch (e) {
       // shortcut: a failed save is shown, not retried; step 6 adds an offline outbox.
       setError(`Not saved: ${e.message}`);
-      if (!activity) callRef.current = null;
+      // Without an activity form the loop moves on; the lead comes back on the next full load.
+      if (!activity) { callRef.current = null; markHandled(l.prospectId); }
       return false;
     }
   }
@@ -246,11 +294,12 @@ export default function DialerScreen() {
     toastTimer.current = setTimeout(() => setToast(null), 2500);
   }
 
-  const start = () => { pausedRef.current = false; next(); };
+  // Start / Resume: a full reload, so anything handled offline or pushed meanwhile is current.
+  const start = () => { pausedRef.current = false; handledRef.current = new Set(); next(true); };
   const pause = () => { pausedRef.current = true; if (phaseRef.current === 'countdown') setPhase('paused'); };
   const stop = () => { pausedRef.current = true; setLead(null); setPhase('idle'); };
 
-  const active = ['countdown', 'calling', 'outcome', 'reason', 'loading'].includes(phase) && lead;
+  const active = phase === 'loading' || (['countdown', 'calling', 'outcome', 'reason'].includes(phase) && lead);
   const marking = phase === 'outcome' || phase === 'reason'; // after a call: lead card on top, what to mark below
   const reasons = form?.connected ? form.fields.find((f) => f.schema === form.connected.reason).dependent.No : [];
   const left = queueInfo?.count ?? 0;
@@ -266,8 +315,47 @@ export default function DialerScreen() {
     <View style={styles.screen}>
       <View style={styles.top}>
         <Image source={wordmark} style={styles.wordmark} accessibilityLabel="Kalvium" />
-        <Text style={styles.signOut} onPress={() => supabase.auth.signOut()}>Sign out</Text>
+        {refreshing ? (
+          <ActivityIndicator color={colors.text} accessibilityLabel="Refreshing leads" style={styles.iconBtn} />
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Menu"
+            hitSlop={12}
+            style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.4 }]}
+            onPress={() => setMenuOpen(true)}
+          >
+            <Ionicons name="menu" size={26} color={colors.text} />
+          </Pressable>
+        )}
       </View>
+
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+        <Pressable style={styles.menuScrim} onPress={() => setMenuOpen(false)} accessibilityLabel="Close menu">
+          <View style={styles.menu}>
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+              onPress={refreshNow}
+            >
+              <Ionicons name="refresh" size={20} color={colors.text} />
+              <Text style={styles.menuText}>Refresh leads</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: looping }}
+              disabled={looping}
+              style={({ pressed }) => [styles.menuItem, styles.lastRow, (pressed || looping) && styles.pressed]}
+              onPress={confirmSignOut}
+            >
+              <Ionicons name="log-out-outline" size={20} color={looping ? colors.muted : colors.text} />
+              <Text style={[styles.menuText, looping && { color: colors.muted }]}>
+                {looping ? 'Sign out (pause first)' : 'Sign out'}
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       {active && marking ? (
         <View style={styles.mark}>
@@ -287,19 +375,26 @@ export default function DialerScreen() {
 
           {phase === 'reason' && (
             <ScrollView style={styles.outcomes}>
-              {reasons.map((r) => (
+              {reasons.map((r, i) => (
                 <Pressable
                   key={r}
                   accessibilityRole="button"
                   disabled={saving}
-                  style={({ pressed }) => [styles.outcome, pressed && styles.pressed]}
-                  onPress={() => submit({ ...values, [form.connected.reason]: r })}
+                  style={({ pressed }) => [styles.outcome, i === reasons.length - 1 && styles.lastRow, pressed && styles.pressed]}
+                  onPress={async () => {
+                    setSavingReason(r);
+                    await submit({ ...values, [form.connected.reason]: r });
+                    setSavingReason(null);
+                  }}
                 >
                   <Text style={styles.outcomeText}>{r}</Text>
+                  {savingReason === r && <Text style={styles.muted}>Saving…</Text>}
                 </Pressable>
               ))}
-              <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form instead</Text>
             </ScrollView>
+          )}
+          {phase === 'reason' && (
+            <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form instead</Text>
           )}
 
           {phase === 'outcome' && form && (
@@ -310,11 +405,11 @@ export default function DialerScreen() {
 
           {phase === 'outcome' && !form && (
             <ScrollView style={styles.outcomes}>
-              {OUTCOMES.map(([value, label]) => (
+              {OUTCOMES.map(([value, label], i) => (
                 <Pressable
                   key={value}
                   accessibilityRole="button"
-                  style={({ pressed }) => [styles.outcome, pressed && styles.pressed]}
+                  style={({ pressed }) => [styles.outcome, i === OUTCOMES.length - 1 && styles.lastRow, pressed && styles.pressed]}
                   onPress={() => chooseOutcome(value, label)}
                 >
                   <Text style={styles.outcomeText}>{label}</Text>
@@ -322,6 +417,13 @@ export default function DialerScreen() {
               ))}
             </ScrollView>
           )}
+        </View>
+      ) : phase === 'loading' ? (
+        <View style={styles.call} accessibilityLabel="Loading the next lead">
+          <Skeleton style={{ width: 90, height: 16, marginBottom: 16 }} />
+          <Skeleton style={{ width: '70%', height: 34, marginBottom: 12 }} />
+          <Skeleton style={{ width: 150, height: 18, marginBottom: 8 }} />
+          <Skeleton style={{ width: 110, height: 18 }} />
         </View>
       ) : active ? (
         <View style={styles.call}>
@@ -336,10 +438,25 @@ export default function DialerScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
-          <Text style={styles.count}>{queueInfo ? left : '–'}</Text>
-          <Text style={styles.countLabel}>
-            {phase === 'done' || (queueInfo && !left) ? 'All caught up' : left === 1 ? 'lead to call' : 'leads to call'}
-          </Text>
+          {queueInfo ? (
+            <>
+              <Text style={styles.count}>{left}</Text>
+              <Text style={styles.countLabel}>
+                {phase === 'done' || !left ? 'All caught up' : left === 1 ? 'lead to call' : 'leads to call'}
+              </Text>
+            </>
+          ) : (
+            <View accessibilityLabel="Loading your leads">
+              <Skeleton style={{ width: 72, height: 64, marginTop: 8, marginBottom: 12 }} />
+              <Skeleton style={{ width: 110, height: 18, marginBottom: 36 }} />
+              {[0, 1, 2, 3, 4].map((i) => (
+                <View key={i} style={styles.row}>
+                  <Skeleton style={{ flex: 1, height: 18, marginRight: 48 }} />
+                  <Skeleton style={{ width: 72, height: 14 }} />
+                </View>
+              ))}
+            </View>
+          )}
           {queueInfo?.rule && <Text style={styles.muted}>From {queueInfo.rule.listName}, since {queueInfo.rule.startTime}</Text>}
 
           {!granted && <Text style={styles.notice}>Allow calls, phone state and call log to start dialing.</Text>}
@@ -361,11 +478,7 @@ export default function DialerScreen() {
 
       {!!error && <Text style={[styles.footnote, { color: colors.red }]} numberOfLines={3}>{error}</Text>}
 
-      {!!toast && (
-        <View style={styles.toast} pointerEvents="none" accessibilityLiveRegion="polite">
-          <Text style={styles.toastText}>✓  {toast}</Text>
-        </View>
-      )}
+      <Toast text={toast} />
 
       <View style={styles.footer}>
         {['idle', 'done'].includes(phase) && (
@@ -408,7 +521,11 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingTop: 56, paddingBottom: 8 },
   wordmark: { width: 119, height: 24 }, // 2000×404 artwork
-  signOut: { color: colors.muted, fontSize: 15 },
+  iconBtn: { padding: 4, minWidth: 34 },
+  menuScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
+  menu: { ...card, position: 'absolute', top: 96, right: 24, minWidth: 220, elevation: 6 },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  menuText: { fontSize: 17, color: colors.text },
   muted: { color: colors.muted, fontSize: 15 },
 
   list: { paddingHorizontal: 24, paddingTop: 40, paddingBottom: 24 },
@@ -422,23 +539,22 @@ const styles = StyleSheet.create({
 
   call: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
   mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
-  leadCard: { backgroundColor: '#F5F5F5', borderRadius: 16, padding: 16, marginBottom: 24 },
+  leadCard: { ...card, backgroundColor: '#F7F7F7', padding: 16, marginBottom: 24 },
   cardStatus: { fontSize: 13, color: colors.muted, marginBottom: 4 },
   cardName: { fontSize: 22, fontWeight: '600', color: colors.text, marginBottom: 2 },
   cardMeta: { fontSize: 15, color: colors.muted, lineHeight: 22 },
   sectionTitle: { fontSize: 20, fontWeight: '600', color: colors.text },
-  sectionHint: { fontSize: 15, color: colors.muted, marginTop: 2, marginBottom: 8 },
-  formBox: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
-  toast: { position: 'absolute', left: 24, right: 24, bottom: 112, backgroundColor: colors.text, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 16 },
-  toastText: { color: colors.bg, fontSize: 15, fontWeight: '500' },
+  sectionHint: { fontSize: 15, color: colors.muted, marginTop: 2, marginBottom: 12 },
+  formBox: { flex: 1 },
   fullForm: { fontSize: 15, color: colors.text, textDecorationLine: 'underline', paddingVertical: 16 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
   status: { fontSize: 15, color: colors.muted },
   callName: { fontSize: 34, fontWeight: '600', color: colors.text, marginBottom: 8 },
   callMeta: { fontSize: 17, color: colors.muted, lineHeight: 26 },
-  outcomes: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
-  outcome: { paddingVertical: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  outcomes: { flexGrow: 0, ...card },
+  outcome: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  lastRow: { borderBottomWidth: 0 },
   outcomeText: { fontSize: 18, color: colors.text },
   pressed: { backgroundColor: '#F5F5F5' },
 

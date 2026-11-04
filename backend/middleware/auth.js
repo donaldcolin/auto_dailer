@@ -4,6 +4,7 @@ const { withTeamLead } = require('../services/team');
 
 const USER_CACHE_TTL_MS = 60 * 1000;
 const _userCache = new Map(); // token -> { user, expires }
+const _profileCache = new Map(); // auth user id -> { profile, expires }: saves 2 database reads per request while dialing
 
 /**
  * Verifies a Supabase session token with Supabase Auth (works for both legacy HS256
@@ -32,12 +33,18 @@ async function requireAuth(req, res, next) {
   try {
     const user = await verifySupabaseToken(authHeader.slice(7).trim());
     if (!user) return res.status(401).json({ error: 'Invalid or expired token' });
-    const profile = await getProfile(user);
-    if (!profile) {
-      return res.status(403).json({ error: `No active LeadSquared user has the email ${user.email}` });
+    let hit = _profileCache.get(user.id);
+    if (!hit || hit.expires <= Date.now()) {
+      const profile = await getProfile(user);
+      if (!profile) {
+        return res.status(403).json({ error: `No active LeadSquared user has the email ${user.email}` });
+      }
+      // A manager's TL change reaches the TL within a minute.
+      hit = { profile: await withTeamLead(profile), expires: Date.now() + USER_CACHE_TTL_MS };
+      if (_profileCache.size > 1000) _profileCache.clear();
+      _profileCache.set(user.id, hit);
     }
-    // TL status is read on every request so a manager's change applies at once.
-    req.profile = await withTeamLead(profile);
+    req.profile = hit.profile;
     return next();
   } catch (err) {
     console.error('[auth]', err.message);
@@ -55,4 +62,7 @@ function requireAccess(allowed) {
   };
 }
 
-module.exports = { requireAuth, requireAccess };
+// Tests switch the same user between roles.
+const clearAuthCache = () => { _userCache.clear(); _profileCache.clear(); };
+
+module.exports = { requireAuth, requireAccess, clearAuthCache };

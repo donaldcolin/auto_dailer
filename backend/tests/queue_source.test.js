@@ -83,3 +83,13 @@ test('pushed leads come first (oldest push first), closed stages included, no du
   expect(q.leads[0]).toMatchObject({ pushed: true, pushedAt: '2026-11-03T05:00:00.000Z' });
   expect(q.leads[2].pushed).toBeUndefined();
 });
+
+test('fresh: re-reads LSQ instead of the cached leads', async () => {
+  activeRuleFor.mockResolvedValue(null);
+  owned = [{ ProspectID: 'a', OwnerId: 'L4', Mobile: '1', ProspectStage: 'New Lead' }];
+  expect((await getQueue({ id: 'u4', lsq_user_id: 'L4', groups: [] })).leads).toHaveLength(1);
+
+  owned = [...owned, { ProspectID: 'b', OwnerId: 'L4', Mobile: '2', ProspectStage: 'New Lead' }]; // ops assigns one more
+  expect((await getQueue({ id: 'u4', lsq_user_id: 'L4', groups: [] })).leads).toHaveLength(1); // cached
+  expect((await getQueue({ id: 'u4', lsq_user_id: 'L4', groups: [] }, new Date(), { fresh: true })).leads).toHaveLength(2);
+});

@@ -13,9 +13,11 @@ const supabase = require('../config/supabase');
 const { getProfile } = require('../services/profile');
 const { getDialerLists } = require('../services/lsq_lists');
 const app = require('../server');
+const { clearAuthCache } = require('../middleware/auth');
 
 // Each test uses a different token so the auth middleware's token cache doesn't leak between tests.
 const as = (access) => {
+  clearAuthCache();
   supabase.auth.getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'a@kalvium.com' } }, error: null });
   getProfile.mockResolvedValue(access && { id: 'u1', email: 'a@kalvium.com', name: 'A', lsq_user_id: 'L1', access, groups: ['Team Hema'] });
 };
@@ -92,4 +94,12 @@ test('/api/disposition for HR posts the activity first; a failed post saves noth
   expect(lsq).toHaveBeenLastCalledWith(expect.objectContaining({ event: 263, prospectId: 'p2', ownerId: 'L2', fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }] }));
   expect(inserted).toHaveLength(1);
   form.mockRestore(); lsq.mockRestore();
+});
+
+test('the profile is read once a minute per user, not on every request', async () => {
+  as('associate');
+  getProfile.mockClear();
+  await request(app).get('/api/me').set('Authorization', 'Bearer t-cache');
+  await request(app).get('/api/me').set('Authorization', 'Bearer t-cache');
+  expect(getProfile).toHaveBeenCalledTimes(1);
 });

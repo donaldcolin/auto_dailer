@@ -8,7 +8,7 @@ const FORMS = {
     // shortcut: people outside Team HR by email (the HR manager; Donald for testing); move to a table if more teams join.
     emails: ['amulya.gowda@kalvium.com', 'donald.colin@kalvium.com'],
     // Shown first; the rest sits under "More fields". Picked from what HR filled in 59 real entries (2026-11-04).
-    short: ['mx_Custom_1', 'mx_Custom_3', 'mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10', 'mx_Custom_23', 'mx_Custom_44', 'ActivityEvent_Note', 'mx_Custom_4'],
+    short: ['mx_Custom_1', 'mx_Custom_3', 'mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10', 'mx_Custom_23', 'mx_Custom_44', 'mx_Custom_50', 'ActivityEvent_Note', 'mx_Custom_4'],
     // Carried over from the last saved activity on the phone, so the reason screen needs one tap.
     sticky: ['mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10'],
     defaults: { mx_Custom_2: 'Screening Round', mx_Custom_9: 'Sales', mx_Custom_10: 'BDA / BDT' },

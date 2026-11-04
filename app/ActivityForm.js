@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import { colors } from './ui';
+import { card, colors } from './ui';
 
 // Options a dropdown offers right now: a dependent one follows its parent's value.
 export const optionsFor = (f, values) => (f.dependent ? f.dependent[values[f.parent]] || [] : f.options);
@@ -28,8 +28,8 @@ export default function ActivityForm({ form, values, onChange }) {
   const set = (schema, v) => onChange(setValue(form, values, schema, v));
   // A dependent dropdown with nothing to offer (e.g. the failure reason on a connected call) is hidden.
   const visible = (f) => !f.dependent || optionsFor(f, values).length > 0;
-  const short = form.short.map((s) => form.fields.find((f) => f.schema === s)).filter(Boolean);
-  const rest = form.fields.filter((f) => !form.short.includes(f.schema));
+  const short = form.short.map((s) => form.fields.find((f) => f.schema === s)).filter((f) => f && visible(f));
+  const rest = form.fields.filter((f) => !form.short.includes(f.schema) && visible(f));
 
   function pickDate(f) {
     const value = values[f.schema] ? new Date(values[f.schema]) : new Date();
@@ -45,16 +45,16 @@ export default function ActivityForm({ form, values, onChange }) {
     });
   }
 
-  function field(f) {
-    if (!visible(f)) return null;
+  function field(f, i, list) {
     const v = values[f.schema];
+    const rowStyle = [styles.row, i === list.length - 1 && styles.lastRow];
     if (f.type === 'dropdown' || f.type === 'datetime') {
       return (
         <Pressable
           key={f.schema}
           accessibilityRole="button"
           accessibilityLabel={`${f.label}: ${v || 'not set'}`}
-          style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+          style={({ pressed }) => [rowStyle, pressed && styles.pressed]}
           onPress={() => (f.type === 'dropdown' ? setPicking(f) : pickDate(f))}
         >
           <Text style={styles.label}>{f.label}{f.required ? ' *' : ''}</Text>
@@ -63,7 +63,7 @@ export default function ActivityForm({ form, values, onChange }) {
       );
     }
     return (
-      <View key={f.schema} style={styles.row}>
+      <View key={f.schema} style={rowStyle}>
         <Text style={styles.label}>{f.label}{f.required ? ' *' : ''}</Text>
         <TextInput
           style={styles.input}
@@ -82,11 +82,11 @@ export default function ActivityForm({ form, values, onChange }) {
   return (
     <>
       <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-        {short.map(field)}
+        <View style={card}>{short.map(field)}</View>
         <Pressable accessibilityRole="button" onPress={() => setMore(!more)} style={styles.more}>
-          <Text style={styles.moreText}>{more ? 'Fewer fields' : 'More fields'}</Text>
+          <Text style={styles.moreText}>{more ? 'Fewer fields' : `More fields (${rest.length})`}</Text>
         </Pressable>
-        {more && rest.map(field)}
+        {more && <View style={card}>{rest.map(field)}</View>}
       </ScrollView>
 
       <Modal visible={!!picking} transparent animationType="slide" onRequestClose={() => setPicking(null)}>
@@ -117,7 +117,8 @@ export default function ActivityForm({ form, values, onChange }) {
 
 const styles = StyleSheet.create({
   form: { paddingBottom: 24 },
-  row: { paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  row: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  lastRow: { borderBottomWidth: 0 },
   pressed: { backgroundColor: '#F5F5F5' },
   label: { fontSize: 13, color: colors.muted, marginBottom: 4 },
   value: { fontSize: 17, color: colors.text },
