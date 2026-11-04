@@ -34,6 +34,21 @@ function rememberSticky(form, vals) {
   try { localStorage.setItem(stickyKey(form), JSON.stringify(keep)); } catch {}
 }
 
+// Source, location, past calls… from LSQ, as label/value rows (only the filled ones arrive).
+function LeadDetails({ details, compact }) {
+  if (!details?.length) return null;
+  return (
+    <View style={compact ? styles.detailsCompact : styles.details}>
+      {details.map((d) => (
+        <View key={d.label} style={styles.detailRow}>
+          <Text style={[styles.detailLabel, compact && styles.detailSmall]}>{d.label}</Text>
+          <Text style={[styles.detailValue, compact && styles.detailSmall]} numberOfLines={2}>{d.value}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dialable = (phone) => String(phone).replace(/[^\d+]/g, ''); // LSQ stores "+91-98…"
 // "+91-8431772316" → "+91 84317 72316"
@@ -59,6 +74,8 @@ export default function DialerScreen() {
   const toastTimer = useRef(null);
   const [error, setError] = useState(null);
   const [form, setForm] = useState(null); // the team's LSQ activity, or null
+  // Dialing waits for this: an HR phone that dialed without its form would save calls with no HR Activity.
+  const [formState, setFormState] = useState('loading'); // loading | ready | failed
   const [values, setValues] = useState({});
   const [saving, setSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -77,7 +94,7 @@ export default function DialerScreen() {
 
   useEffect(() => {
     api('/api/me').then(setMe).catch((e) => setError(e.message));
-    api('/api/activity-form').then((r) => setForm(r.form)).catch((e) => setError(e.message));
+    loadForm();
     PermissionsAndroid.requestMultiple(PERMISSIONS).then((res) => {
       const ok = PERMISSIONS.every((p) => res[p] === PermissionsAndroid.RESULTS.GRANTED);
       setGranted(ok);
@@ -127,6 +144,13 @@ export default function DialerScreen() {
     const t = setInterval(() => refresh().catch(() => {}), 30000);
     return () => clearInterval(t);
   }, [phase]);
+
+  function loadForm() {
+    setFormState('loading');
+    api('/api/activity-form')
+      .then((r) => { setForm(r.form); setFormState('ready'); })
+      .catch(() => setFormState('failed'));
+  }
 
   // The queue as last loaded, minus the leads handled since. Moving to the next lead uses this list
   // straight away; the server reload runs in the background (it only adds a TL's new pushes).
@@ -364,6 +388,7 @@ export default function DialerScreen() {
             <Text style={styles.cardName} numberOfLines={1}>{lead.name || 'No name'}</Text>
             <Text style={styles.cardMeta}>{pretty(lead.phone)}</Text>
             {!!lead.stage && <Text style={styles.cardMeta}>{lead.stage}{lead.pushed ? ', pushed by your TL' : ''}</Text>}
+            <LeadDetails details={lead.details} compact />
           </View>
 
           <Text style={styles.sectionTitle}>
@@ -435,6 +460,7 @@ export default function DialerScreen() {
           <Text style={styles.callMeta}>{pretty(lead.phone)}</Text>
           <Text style={styles.callMeta}>{lead.stage}</Text>
           {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
+          <LeadDetails details={lead.details} />
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
@@ -460,6 +486,12 @@ export default function DialerScreen() {
           {queueInfo?.rule && <Text style={styles.muted}>From {queueInfo.rule.listName}, since {queueInfo.rule.startTime}</Text>}
 
           {!granted && <Text style={styles.notice}>Allow calls, phone state and call log to start dialing.</Text>}
+          {formState === 'failed' && (
+            <Text style={styles.notice}>
+              Couldn't load your call form, so dialing is off.{' '}
+              <Text style={styles.noticeLink} onPress={loadForm}>Try again</Text>
+            </Text>
+          )}
           {!canFront && (
             <Text style={styles.notice}>
               Turn on "Display over other apps" so the dialer returns after each call.{' '}
@@ -484,7 +516,7 @@ export default function DialerScreen() {
         {['idle', 'done'].includes(phase) && (
           phase === 'done'
             ? <Btn title="Check again" onPress={() => refresh().catch((e) => setError(e.message))} />
-            : <Btn title="Start" onPress={start} disabled={!granted || !left} />
+            : <Btn title={formState === 'loading' ? 'Getting ready…' : 'Start'} onPress={start} disabled={!granted || !left || formState !== 'ready'} />
         )}
         {phase === 'paused' && (
           <View style={styles.pair}>
@@ -558,6 +590,12 @@ const styles = StyleSheet.create({
   outcomeText: { fontSize: 18, color: colors.text },
   pressed: { backgroundColor: '#F5F5F5' },
 
+  details: { ...card, marginTop: 24, paddingHorizontal: 16, paddingVertical: 8 },
+  detailsCompact: { marginTop: 10, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#DADADA' },
+  detailRow: { flexDirection: 'row', gap: 12, paddingVertical: 4 },
+  detailLabel: { width: 84, fontSize: 15, color: colors.muted },
+  detailValue: { flex: 1, fontSize: 15, color: colors.text },
+  detailSmall: { fontSize: 13 },
   footnote: { paddingHorizontal: 24, paddingBottom: 8, fontSize: 14, color: colors.muted },
   footer: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 32 },
   pair: { flexDirection: 'row', gap: 12 },
