@@ -20,7 +20,8 @@ export default function App() {
   return (
     <>
       {session ? <DialerScreen key={session.user.id} /> : <LoginScreen />}
-      <StatusBar style="auto" />
+      {/* The app is always white, so status bar icons are always dark (auto would turn them white in dark mode). */}
+      <StatusBar style="dark" />
     </>
   );
 }

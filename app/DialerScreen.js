@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, Image, Modal, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
 import Dialer from './modules/dialer';
@@ -551,11 +551,12 @@ export default function DialerScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingTop: 56, paddingBottom: 8 },
+  // The app draws under the status bar (edge to edge), so the header starts below its real height.
+  top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingTop: (StatusBar.currentHeight || 24) + 24, paddingBottom: 12 },
   wordmark: { width: 119, height: 24 }, // 2000×404 artwork
   iconBtn: { padding: 4, minWidth: 34 },
   menuScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
-  menu: { ...card, position: 'absolute', top: 96, right: 24, minWidth: 220, elevation: 6 },
+  menu: { ...card, position: 'absolute', top: (StatusBar.currentHeight || 24) + 72, right: 24, minWidth: 220, elevation: 6 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   menuText: { fontSize: 17, color: colors.text },
   muted: { color: colors.muted, fontSize: 15 },
