@@ -15,9 +15,10 @@ const SKIP_BY_DEFAULT = new Set(['Signup Done', 'Payment Done', 'Customer', 'Dis
 // HR keeps every candidate in one stage ("HR New Lead") and records outcomes in HR Activity, so its default
 // queue is the candidates nobody has spoken to yet (Donald, 2026-11-04). Unanswered ones return on later days.
 const HR_EVENT = 263;
-const keepByDefault = profile => (activityEventFor(profile) === HR_EVENT
-  ? l => !l.connects
-  : l => !SKIP_BY_DEFAULT.has(l.stage));
+const keepByDefault = profile => {
+  const hr = activityEventFor(profile) === HR_EVENT;
+  return l => !SKIP_BY_DEFAULT.has(l.stage) && !(hr && l.connects);
+};
 // One HR associate owns ~7,700 leads; reading them all takes over a minute and trips LSQ's rate limit.
 // So the default queue stops at the newest MAX_QUEUE dialable leads (2 days of ~150 dials).
 // shortcut: and reads at most MAX_PAGES pages (2,000 newest leads); older open leads need a TL push or rule.

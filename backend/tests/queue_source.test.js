@@ -121,12 +121,13 @@ test('details: filled fields only, in plain words, LSQ UTC shown as IST', () => 
   expect(details({ mx_Total_Calls: '0', LeadAge: '1' })).toEqual([{ label: 'Lead age', value: '1 day' }]);
 });
 
-test('HR: only candidates nobody has spoken to (Total Connects 0), whatever the stage', async () => {
+test('HR: only candidates nobody has spoken to (Total Connects 0), and never closed stages', async () => {
   activeRuleFor.mockResolvedValue(null);
   owned = [
     { ProspectID: 'fresh', OwnerId: 'L5', Mobile: '1', ProspectStage: 'HR New Lead', mx_Total_Connects: '0' },
     { ProspectID: 'blank', OwnerId: 'L5', Mobile: '2', ProspectStage: 'HR New Lead' },
     { ProspectID: 'spoken', OwnerId: 'L5', Mobile: '3', ProspectStage: 'HR New Lead', mx_Total_Connects: '2' },
+    { ProspectID: 'closed', OwnerId: 'L5', Mobile: '4', ProspectStage: 'Customer', mx_Total_Connects: '0' },
   ];
   const q = await getQueue({ id: 'u5', email: 'x@kalvium.com', lsq_user_id: 'L5', groups: ['Team HR'] });
   expect(q.leads.map(l => l.prospectId)).toEqual(['fresh', 'blank']);
