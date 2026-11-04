@@ -319,21 +319,23 @@ export default function DialerScreen() {
 
   // Returns false when not saved; the call stays open so a marked activity can be sent again.
   async function save(outcome, seconds, activity) {
-    const { lead: l, startedAt } = callRef.current;
+    const call = callRef.current;
+    const { lead: l, startedAt } = call;
+    // Only clear the call this save was for: a skip saves in the background while the next lead is already up.
+    const done = () => { if (callRef.current === call) callRef.current = null; markHandled(l.prospectId); };
     try {
       await api('/api/disposition', {
         method: 'POST',
         body: { prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId, activity },
       });
-      callRef.current = null;
-      markHandled(l.prospectId);
+      done();
       setError(null);
       return true;
     } catch (e) {
       // shortcut: a failed save is shown, not retried; step 6 adds an offline outbox.
       setError(`Not saved: ${e.message}`);
       // Without an activity form the loop moves on; the lead comes back on the next full load.
-      if (!activity) { callRef.current = null; markHandled(l.prospectId); }
+      if (!activity) done();
       return false;
     }
   }
@@ -357,9 +359,13 @@ export default function DialerScreen() {
     next();
   }
 
-  async function skip() {
+  // Instant: the next lead comes up at once (waiting on the save let the countdown run on, and the buttons shift
+  // under a second tap); the skip is saved in the background.
+  function skip() {
+    if (phaseRef.current !== 'countdown') return;
     callRef.current = { lead, startedAt: new Date().toISOString() };
-    await save('skipped', null);
+    markHandled(lead.prospectId);
+    save('skipped', null);
     showToast(`Skipped ${lead.name || 'lead'}`);
     next();
   }
@@ -637,8 +643,8 @@ export default function DialerScreen() {
         {phase === 'countdown' && held && (
           <>
             <View style={styles.pair}>
-              <Btn title="Skip" kind="plain" onPress={skip} style={styles.half} />
               <Btn title="Call now" onPress={() => { setHeldId(null); dial(); }} style={styles.half} />
+              <Btn title="Skip" kind="plain" onPress={skip} style={styles.half} />
             </View>
             <Text style={styles.backLink} onPress={pause}>Back to list</Text>
           </>
