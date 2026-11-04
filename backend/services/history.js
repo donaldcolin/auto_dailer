@@ -3,7 +3,8 @@ const activity = require('./activity');
 const { istTime } = require('./queue');
 
 const PHONE_CALLS = new Set([21, 22]); // inbound / outbound phone call activities (Callyzer)
-const PUSH_EVENT = 283;
+// Not worth reading before a call (Donald, 2026-11-04): SMS sent, dynamic form submissions, Auto Dialer pushes.
+const HIDDEN = new Set([203, 97, 283]);
 
 // One line about a team-form activity (HR Activity…) from the values LSQ lists with it, labelled by the form.
 function formSummary(fields, form) {
@@ -24,12 +25,13 @@ function formSummary(fields, form) {
  * { at, what, by, detail, note }. One LSQ call; team-form values come labelled from the form's metadata.
  */
 async function leadHistory(leadId, limit = 6) {
+  // Read extra rows so hidden kinds don't leave the list short.
   const { data } = await lsqClient.post(`${lsqUrl('ProspectActivity.svc/Retrieve')}&leadId=${encodeURIComponent(leadId)}`, {
     Parameter: { FromDate: '', ToDate: '', IncludeCustomActivity: 1 },
-    Paging: { Offset: '0', RowCount: String(limit) },
+    Paging: { Offset: '0', RowCount: String(limit * 3) },
     Sorting: { ColumnName: 'CreatedOn', Direction: '1' },
   });
-  const rows = data.ProspectActivities || [];
+  const rows = (data.ProspectActivities || []).filter(a => !HIDDEN.has(a.EventCode)).slice(0, limit);
   const forms = {};
   for (const e of new Set(rows.map(a => a.EventCode))) if (activity.FORMS[e]) forms[e] = await activity.getForm(e);
 
@@ -41,7 +43,7 @@ async function leadHistory(leadId, limit = 6) {
     else if (PHONE_CALLS.has(a.EventCode)) detail = d.CallType || '';
     return {
       at: istTime(a.CreatedOn),
-      what: a.EventCode === PUSH_EVENT ? 'Pushed to the dialer' : a.EventCode === 22 ? 'Outgoing call' : a.EventCode === 21 ? 'Incoming call' : a.EventName,
+      what: a.EventCode === 22 ? 'Outgoing call' : a.EventCode === 21 ? 'Incoming call' : a.EventName,
       by: d.CreatedByName || '',
       detail,
       note: forms[a.EventCode] ? (fields.ActivityEvent_Note || '') : '',

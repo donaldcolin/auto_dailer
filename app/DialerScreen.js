@@ -98,6 +98,8 @@ export default function DialerScreen() {
   const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, leads }
   const [tab, setTab] = useState(null); // 'pushed' | 'mine'; null = pushed when there are any
   const [countdown, setCountdown] = useState(COUNTDOWN_SEC);
+  // The lead whose countdown is frozen so the caller can read it; tied to the lead so the next one never inherits it.
+  const [heldId, setHeldId] = useState(null);
   const [talkSeconds, setTalkSeconds] = useState(0);
   const [toast, setToast] = useState(null); // "HR Activity saved for Akhila", shown for a moment after each save
   const toastTimer = useRef(null);
@@ -152,13 +154,16 @@ export default function DialerScreen() {
     };
   }, []);
 
+  const held = !!lead && heldId === lead.prospectId;
+  const hold = () => { if (phaseRef.current === 'countdown' && lead) setHeldId(lead.prospectId); };
+
   // Countdown before each dial; Skip / Pause / Stop leave the 'countdown' phase and so cancel it.
   useEffect(() => {
-    if (phase !== 'countdown') return;
+    if (phase !== 'countdown' || held) return;
     if (countdown === 0) { dial(); return; }
     const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(t);
-  }, [phase, countdown]);
+  }, [phase, countdown, held]);
 
   // Load the current lead's recent LSQ activity once per lead, while the countdown runs.
   useEffect(() => {
@@ -372,7 +377,7 @@ export default function DialerScreen() {
   const shownTab = tab || (pushedLeads.length ? 'pushed' : 'mine');
   const tabLeads = shownTab === 'pushed' ? pushedLeads : myLeads;
   const status = {
-    countdown: `Calling in ${countdown}`,
+    countdown: held ? 'On hold. Tap Call now when you\'re ready.' : `Calling in ${countdown}`,
     calling: 'On call',
     outcome: talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
     reason: 'Not answered',
@@ -496,7 +501,11 @@ export default function DialerScreen() {
           <Skeleton style={{ width: 110, height: 18 }} />
         </View>
       ) : active ? (
-        <ScrollView contentContainerStyle={styles.call}>
+        <ScrollView
+          key={lead.prospectId} // a fresh screen per lead: starts at the top, no scroll carried over
+          contentContainerStyle={styles.call}
+          onScrollBeginDrag={hold} // reading: don't call yet
+        >
           <View style={styles.statusRow}>
             {phase === 'calling' && <View style={styles.liveDot} />}
             <Text style={styles.status}>{status}</Text>
@@ -612,11 +621,20 @@ export default function DialerScreen() {
             <Btn title="Resume" onPress={start} style={styles.half} />
           </View>
         )}
-        {phase === 'countdown' && (
+        {phase === 'countdown' && !held && (
           <View style={styles.pair}>
-            <Btn title="Pause" kind="plain" onPress={pause} style={styles.half} />
+            <Btn title="Hold" kind="plain" onPress={hold} style={styles.half} />
             <Btn title="Skip" kind="plain" onPress={skip} style={styles.half} />
           </View>
+        )}
+        {phase === 'countdown' && held && (
+          <>
+            <View style={styles.pair}>
+              <Btn title="Skip" kind="plain" onPress={skip} style={styles.half} />
+              <Btn title="Call now" onPress={() => { setHeldId(null); dial(); }} style={styles.half} />
+            </View>
+            <Text style={styles.backLink} onPress={pause}>Back to list</Text>
+          </>
         )}
         {phase === 'calling' && (
           <View style={styles.pair}>
@@ -714,5 +732,6 @@ const styles = StyleSheet.create({
   footnote: { paddingHorizontal: 24, paddingBottom: 8, fontSize: 14, color: colors.muted },
   footer: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 32 },
   pair: { flexDirection: 'row', gap: 12 },
+  backLink: { textAlign: 'center', fontSize: 15, color: colors.muted, paddingTop: 12 },
   half: { flex: 1 },
 });
