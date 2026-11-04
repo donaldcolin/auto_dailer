@@ -106,6 +106,14 @@ export default function DialerScreen() {
     return () => clearTimeout(t);
   }, [phase, countdown]);
 
+  // Foreground service while the loop runs, so Android doesn't freeze or kill it between calls.
+  const looping = !['idle', 'done', 'paused'].includes(phase);
+  useEffect(() => {
+    if (looping) Dialer.startKeepAlive();
+    else Dialer.stopKeepAlive();
+  }, [looping]);
+  useEffect(() => () => Dialer.stopKeepAlive(), []);
+
   // While not dialing, keep the list fresh so a TL's push shows up. Never starts dialing by itself.
   useEffect(() => {
     if (phase !== 'idle' && phase !== 'done') return;

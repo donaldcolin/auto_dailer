@@ -9,6 +9,8 @@ declare class DialerModule extends NativeModule<DialerModuleEvents> {
   lastOutgoingCall(sinceMs: number): Promise<OutgoingCall | null>;
   canBringToFront(): boolean;
   openBringToFrontSettings(): void;
+  startKeepAlive(): void;
+  stopKeepAlive(): void;
 }
 
 export default requireNativeModule<DialerModule>('Dialer');

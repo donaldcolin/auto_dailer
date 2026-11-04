@@ -76,6 +76,10 @@ class DialerModule : Module() {
       callback = null
     }
 
+    // Foreground service + wake lock while dialing (KeepAliveService); stop it when the loop stops.
+    Function("startKeepAlive") { context.startForegroundService(Intent(context, KeepAliveService::class.java)); Unit }
+    Function("stopKeepAlive") { context.stopService(Intent(context, KeepAliveService::class.java)); Unit }
+
     // Newest outgoing call since sinceMs. Talk time > 0 means the other side answered.
     AsyncFunction("lastOutgoingCall") { sinceMs: Double ->
       context.contentResolver.query(
