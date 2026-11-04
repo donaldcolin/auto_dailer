@@ -10,6 +10,7 @@ export const colors = {
 };
 
 export const logo = require('./assets/logo.png');
+export const wordmark = require('./assets/wordmark.png'); // the full red Kalvium logo
 
 // primary: black fill for the one main action. plain: text only, for everything else.
 export function Btn({ title, onPress, kind = 'primary', disabled, style }) {

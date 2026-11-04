@@ -4,7 +4,7 @@ import ActivityForm from './ActivityForm';
 import Dialer from './modules/dialer';
 import { api } from './lib/api';
 import { supabase } from './lib/supabase';
-import { Btn, colors, logo } from './ui';
+import { Btn, colors, wordmark } from './ui';
 
 const PERMISSIONS = [
   PermissionsAndroid.PERMISSIONS.CALL_PHONE,
@@ -54,7 +54,8 @@ export default function DialerScreen() {
   const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, upcoming }
   const [countdown, setCountdown] = useState(COUNTDOWN_SEC);
   const [talkSeconds, setTalkSeconds] = useState(0);
-  const [last, setLast] = useState(null); // "Anosha Employee, interested"
+  const [toast, setToast] = useState(null); // "HR Activity saved for Akhila", shown for a moment after each save
+  const toastTimer = useRef(null);
   const [error, setError] = useState(null);
   const [form, setForm] = useState(null); // the team's LSQ activity, or null
   const [values, setValues] = useState({});
@@ -189,7 +190,7 @@ export default function DialerScreen() {
       return;
     }
     await save('no_answer', 0);
-    setLast(`${call.lead.name || 'Lead'}, no answer`);
+    showToast(`No answer saved for ${call.lead.name || 'lead'}`);
     await sleep(NO_ANSWER_PAUSE_MS);
     next();
   }
@@ -222,21 +223,27 @@ export default function DialerScreen() {
     setSaving(false);
     if (!ok) return;
     rememberSticky(form, vals);
-    setLast(`${lead.name || 'Lead'}, ${connected ? 'connected' : (vals[form.connected.reason] || 'not connected').toLowerCase()}`);
+    showToast(`${form.name} saved for ${lead.name || 'lead'}`);
     next();
   }
 
   async function chooseOutcome(outcome, label) {
     await save(outcome, talkSeconds);
-    setLast(`${lead.name || 'Lead'}, ${label.toLowerCase()}`);
+    showToast(`${label} saved for ${lead.name || 'lead'}`);
     next();
   }
 
   async function skip() {
     callRef.current = { lead, startedAt: new Date().toISOString() };
     await save('skipped', null);
-    setLast(`${lead.name || 'Lead'}, skipped`);
+    showToast(`Skipped ${lead.name || 'lead'}`);
     next();
+  }
+
+  function showToast(text) {
+    setToast(text);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2500);
   }
 
   const start = () => { pausedRef.current = false; next(); };
@@ -244,36 +251,42 @@ export default function DialerScreen() {
   const stop = () => { pausedRef.current = true; setLead(null); setPhase('idle'); };
 
   const active = ['countdown', 'calling', 'outcome', 'reason', 'loading'].includes(phase) && lead;
+  const marking = phase === 'outcome' || phase === 'reason'; // after a call: lead card on top, what to mark below
   const reasons = form?.connected ? form.fields.find((f) => f.schema === form.connected.reason).dependent.No : [];
   const left = queueInfo?.count ?? 0;
   const status = {
     countdown: `Calling in ${countdown}`,
     calling: 'On call',
     outcome: talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
-    reason: 'Not answered: why?',
+    reason: 'Not answered',
     loading: 'Next lead',
   }[phase];
 
   return (
     <View style={styles.screen}>
       <View style={styles.top}>
-        <Image source={logo} style={styles.logo} />
+        <Image source={wordmark} style={styles.wordmark} accessibilityLabel="Kalvium" />
         <Text style={styles.signOut} onPress={() => supabase.auth.signOut()}>Sign out</Text>
       </View>
 
-      {active ? (
-        <View style={[styles.call, phase === 'outcome' && form && styles.callTop]}>
-          <View style={styles.statusRow}>
-            {phase === 'calling' && <View style={styles.liveDot} />}
-            <Text style={styles.status}>{status}</Text>
+      {active && marking ? (
+        <View style={styles.mark}>
+          <View style={styles.leadCard}>
+            <Text style={styles.cardStatus}>{status}</Text>
+            <Text style={styles.cardName} numberOfLines={1}>{lead.name || 'No name'}</Text>
+            <Text style={styles.cardMeta}>{pretty(lead.phone)}</Text>
+            {!!lead.stage && <Text style={styles.cardMeta}>{lead.stage}{lead.pushed ? ', pushed by your TL' : ''}</Text>}
           </View>
-          <Text style={styles.callName}>{lead.name || 'No name'}</Text>
-          <Text style={styles.callMeta}>{pretty(lead.phone)}</Text>
-          <Text style={styles.callMeta}>{lead.stage}</Text>
-          {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
+
+          <Text style={styles.sectionTitle}>
+            {phase === 'reason' ? "Why didn't it connect?" : form ? form.name : 'How did the call go?'}
+          </Text>
+          <Text style={styles.sectionHint}>
+            {phase === 'reason' ? `Tap a reason to save the ${form.name}.` : form ? 'Fill in this call, then tap Save.' : 'Tap one to save it.'}
+          </Text>
 
           {phase === 'reason' && (
-            <View style={styles.outcomes}>
+            <ScrollView style={styles.outcomes}>
               {reasons.map((r) => (
                 <Pressable
                   key={r}
@@ -285,8 +298,8 @@ export default function DialerScreen() {
                   <Text style={styles.outcomeText}>{r}</Text>
                 </Pressable>
               ))}
-              <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form</Text>
-            </View>
+              <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form instead</Text>
+            </ScrollView>
           )}
 
           {phase === 'outcome' && form && (
@@ -296,7 +309,7 @@ export default function DialerScreen() {
           )}
 
           {phase === 'outcome' && !form && (
-            <View style={styles.outcomes}>
+            <ScrollView style={styles.outcomes}>
               {OUTCOMES.map(([value, label]) => (
                 <Pressable
                   key={value}
@@ -307,8 +320,19 @@ export default function DialerScreen() {
                   <Text style={styles.outcomeText}>{label}</Text>
                 </Pressable>
               ))}
-            </View>
+            </ScrollView>
           )}
+        </View>
+      ) : active ? (
+        <View style={styles.call}>
+          <View style={styles.statusRow}>
+            {phase === 'calling' && <View style={styles.liveDot} />}
+            <Text style={styles.status}>{status}</Text>
+          </View>
+          <Text style={styles.callName}>{lead.name || 'No name'}</Text>
+          <Text style={styles.callMeta}>{pretty(lead.phone)}</Text>
+          <Text style={styles.callMeta}>{lead.stage}</Text>
+          {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
@@ -335,8 +359,12 @@ export default function DialerScreen() {
         </ScrollView>
       )}
 
-      {(last || error) && (
-        <Text style={[styles.footnote, error && { color: colors.red }]} numberOfLines={2}>{error || `Last: ${last}`}</Text>
+      {!!error && <Text style={[styles.footnote, { color: colors.red }]} numberOfLines={3}>{error}</Text>}
+
+      {!!toast && (
+        <View style={styles.toast} pointerEvents="none" accessibilityLiveRegion="polite">
+          <Text style={styles.toastText}>✓  {toast}</Text>
+        </View>
       )}
 
       <View style={styles.footer}>
@@ -379,7 +407,7 @@ export default function DialerScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24, paddingTop: 56, paddingBottom: 8 },
-  logo: { width: 22, height: 25 },
+  wordmark: { width: 119, height: 24 }, // 2000×404 artwork
   signOut: { color: colors.muted, fontSize: 15 },
   muted: { color: colors.muted, fontSize: 15 },
 
@@ -393,15 +421,23 @@ const styles = StyleSheet.create({
   pushed: { fontSize: 15, fontWeight: '600', color: colors.text },
 
   call: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
-  callTop: { justifyContent: 'flex-start', paddingTop: 24 },
-  formBox: { flex: 1, marginTop: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
+  leadCard: { backgroundColor: '#F5F5F5', borderRadius: 16, padding: 16, marginBottom: 24 },
+  cardStatus: { fontSize: 13, color: colors.muted, marginBottom: 4 },
+  cardName: { fontSize: 22, fontWeight: '600', color: colors.text, marginBottom: 2 },
+  cardMeta: { fontSize: 15, color: colors.muted, lineHeight: 22 },
+  sectionTitle: { fontSize: 20, fontWeight: '600', color: colors.text },
+  sectionHint: { fontSize: 15, color: colors.muted, marginTop: 2, marginBottom: 8 },
+  formBox: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  toast: { position: 'absolute', left: 24, right: 24, bottom: 112, backgroundColor: colors.text, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 16 },
+  toastText: { color: colors.bg, fontSize: 15, fontWeight: '500' },
   fullForm: { fontSize: 15, color: colors.text, textDecorationLine: 'underline', paddingVertical: 16 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
   status: { fontSize: 15, color: colors.muted },
   callName: { fontSize: 34, fontWeight: '600', color: colors.text, marginBottom: 8 },
   callMeta: { fontSize: 17, color: colors.muted, lineHeight: 26 },
-  outcomes: { marginTop: 32, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  outcomes: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   outcome: { paddingVertical: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   outcomeText: { fontSize: 18, color: colors.text },
   pressed: { backgroundColor: '#F5F5F5' },

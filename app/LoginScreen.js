@@ -2,7 +2,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { supabase } from './lib/supabase';
-import { Btn, colors, logo } from './ui';
+import { Btn, colors, wordmark } from './ui';
 
 // Must be listed in Supabase → Authentication → URL Configuration → Redirect URLs.
 const REDIRECT = 'dialer://auth';
@@ -38,7 +38,7 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.top}>
-        <Image source={logo} style={styles.logo} />
+        <Image source={wordmark} style={styles.wordmark} accessibilityLabel="Kalvium" />
         <Text style={styles.title}>Dialer</Text>
       </View>
       <View style={styles.bottom}>
@@ -52,7 +52,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg, padding: 24, justifyContent: 'space-between' },
   top: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 20 },
-  logo: { width: 64, height: 72.5 },
+  wordmark: { width: 240, height: 48.5 }, // 2000×404 artwork
   title: { fontSize: 22, fontWeight: '600', color: colors.text },
   bottom: { gap: 16, paddingBottom: 32 },
   error: { color: colors.red, fontSize: 15, textAlign: 'center' },
