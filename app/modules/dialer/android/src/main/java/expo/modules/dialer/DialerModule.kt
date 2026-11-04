@@ -4,8 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.CallLog
 import android.provider.Settings
+import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import expo.modules.kotlin.exception.Exceptions
@@ -13,7 +16,8 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 class DialerModule : Module() {
-  private var callback: TelephonyCallback? = null
+  private var callback: TelephonyCallback? = null // Android 12+
+  private var legacyListener: PhoneStateListener? = null // Android 10–11
   private var dialing = false // a call we placed is in progress
   private var sawOffhook = false
 
@@ -47,34 +51,32 @@ class DialerModule : Module() {
       )
     }
 
-    // shortcut: Android 12+ (API 31) only; add a PhoneStateListener fallback if a pilot phone runs Android 10–11.
+    // Android 12+ uses TelephonyCallback; Android 10–11 the older PhoneStateListener (same states).
     Function("startCallStateListener") {
-      if (callback != null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@Function null
-      val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-        override fun onCallStateChanged(state: Int) {
-          val name = when (state) {
-            TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
-            TelephonyManager.CALL_STATE_RINGING -> "RINGING"
-            else -> "IDLE"
+      if (callback != null || legacyListener != null) return@Function null
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+          override fun onCallStateChanged(state: Int) = onCallState(state)
+        }
+        telephony.registerTelephonyCallback(context.mainExecutor, cb)
+        callback = cb
+      } else {
+        // PhoneStateListener needs a Looper thread, so it's created and registered on the main thread.
+        Handler(Looper.getMainLooper()).post {
+          @Suppress("DEPRECATION")
+          val l = object : PhoneStateListener() {
+            @Deprecated("Android 10–11 only")
+            override fun onCallStateChanged(state: Int, phoneNumber: String?) = onCallState(state)
           }
-          if (dialing && name == "OFFHOOK") sawOffhook = true
-          // Done natively: React Native pauses JS timers while the phone app is on top,
-          // and some phone apps (OnePlus) stay on screen when the caller hangs up.
-          if (dialing && sawOffhook && name == "IDLE") {
-            dialing = false
-            bringToFront()
-          }
-          sendEvent("onCallState", mapOf("state" to name))
+          @Suppress("DEPRECATION")
+          telephony.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
+          legacyListener = l
         }
       }
-      telephony.registerTelephonyCallback(context.mainExecutor, cb)
-      callback = cb
+      null
     }
 
-    Function("stopCallStateListener") {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callback?.let { telephony.unregisterTelephonyCallback(it) }
-      callback = null
-    }
+    Function("stopCallStateListener") { stopListening() }
 
     // Foreground service + wake lock while dialing (KeepAliveService); stop it when the loop stops.
     Function("startKeepAlive") { context.startForegroundService(Intent(context, KeepAliveService::class.java)); Unit }
@@ -98,10 +100,31 @@ class DialerModule : Module() {
       }
     }
 
-    OnDestroy {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callback?.let { telephony.unregisterTelephonyCallback(it) }
-      callback = null
+    OnDestroy { stopListening() }
+  }
+
+  private fun onCallState(state: Int) {
+    val name = when (state) {
+      TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+      TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+      else -> "IDLE"
     }
+    if (dialing && name == "OFFHOOK") sawOffhook = true
+    // Done natively: React Native pauses JS timers while the phone app is on top,
+    // and some phone apps (OnePlus) stay on screen when the caller hangs up.
+    if (dialing && sawOffhook && name == "IDLE") {
+      dialing = false
+      bringToFront()
+    }
+    sendEvent("onCallState", mapOf("state" to name))
+  }
+
+  private fun stopListening() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callback?.let { telephony.unregisterTelephonyCallback(it) }
+    @Suppress("DEPRECATION")
+    legacyListener?.let { telephony.listen(it, PhoneStateListener.LISTEN_NONE) }
+    callback = null
+    legacyListener = null
   }
 
   private fun bringToFront() {
