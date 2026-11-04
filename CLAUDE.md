@@ -21,6 +21,7 @@ SIM-based progressive auto-dialer for associates (counsellors), plus a rules das
 - Access by role: managers see all teams, TLs see their own sales group. Roles and groups come from LSQ `Users.Get` (`Role`, `MemberOfGroups`).
 - TLs push leads to the dialer by adding LSQ custom activity **283 "Auto Dialer"** to them (manager's choice, 2026-11-03). Pushed leads go first in the owner's queue (`backend/services/pushed.js`). The in-tab filter builder is parked.
 - No reports or stats in this app.
+- After each call the caller marks their team's LSQ activity in the app; the dialer posts it (`backend/services/activity.js`). HR (Team HR + listed emails) = **263 HR Activity** (2026-11-04). Sales = BDA 218, blocked until an admin makes "Spoke with" optional. Created By = the API key user (Donald); Owner = the caller.
 - Call logging to LSQ is done by **Callyzer** (installed on every associate's phone; API docs: https://developers.callyzer.co/v2.2/). The dialer must not write call activities itself. That would log calls twice.
 - Retries are parked for Donald and the manager to decide.
 - Recording: the phone's own auto-record + Callyzer upload. The dialer must place calls through the system phone app (`ACTION_CALL`) so both still see them.

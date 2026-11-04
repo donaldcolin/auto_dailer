@@ -1,3 +1,5 @@
+// No test may reach the real LSQ.
+jest.mock('../config/lsq', () => ({ lsqClient: { get: jest.fn(), post: jest.fn() }, lsqUrl: p => p }));
 const inserted = [];
 jest.mock('../config/supabase', () => ({
   auth: { getUser: jest.fn() },
@@ -62,4 +64,32 @@ test('/api/disposition saves a dial for the caller and checks the body', async (
   expect(inserted).toEqual([expect.objectContaining({
     user_id: 'u1', rule_id: null, prospect_id: 'p1', outcome: 'no_answer', talk_seconds: 0, started_at: '2026-11-03T10:00:00.000Z',
   })]);
+});
+
+test('/api/disposition for HR posts the activity first; a failed post saves nothing', async () => {
+  const activity = require('../services/activity');
+  const form = jest.spyOn(activity, 'getForm').mockResolvedValue({
+    fields: [{ schema: 'mx_Custom_1', label: 'Call Connected', type: 'dropdown', options: ['Yes', 'No'] }],
+  });
+  const lsq = jest.spyOn(activity, 'postActivity');
+  supabase.auth.getUser.mockResolvedValue({ data: { user: { id: 'u2', email: 'hr@kalvium.com' } }, error: null });
+  getProfile.mockResolvedValue({ id: 'u2', email: 'hr@kalvium.com', lsq_user_id: 'L2', access: 'associate', groups: ['Team HR'] });
+  const post = body => request(app).post('/api/disposition').set('Authorization', 'Bearer t-hr').send({ prospectId: 'p2', talkSeconds: 0, ...body });
+  inserted.length = 0;
+
+  expect((await post({ outcome: 'no_answer' })).status).toBe(400); // HR must send the activity
+  expect((await post({ outcome: 'no_answer', activity: { mx_Custom_1: 'Maybe' } })).status).toBe(400);
+
+  lsq.mockRejectedValueOnce(Object.assign(new Error('x'), { response: { status: 500, data: { ExceptionMessage: 'LSQ down' } } }));
+  const failed = await post({ outcome: 'no_answer', activity: { mx_Custom_1: 'No' } });
+  expect(failed.status).toBe(502);
+  expect(failed.body.error).toMatch(/LSQ down/);
+  expect(inserted).toHaveLength(0);
+
+  lsq.mockResolvedValueOnce('act-9');
+  const ok = await post({ outcome: 'no_answer', activity: { mx_Custom_1: 'No' } });
+  expect(ok.body).toEqual({ ok: true, activityId: 'act-9' });
+  expect(lsq).toHaveBeenLastCalledWith(expect.objectContaining({ event: 263, prospectId: 'p2', ownerId: 'L2', fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }] }));
+  expect(inserted).toHaveLength(1);
+  form.mockRestore(); lsq.mockRestore();
 });

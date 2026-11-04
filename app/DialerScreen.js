@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Image, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import ActivityForm from './ActivityForm';
 import Dialer from './modules/dialer';
 import { api } from './lib/api';
 import { supabase } from './lib/supabase';
@@ -12,13 +13,25 @@ const PERMISSIONS = [
 ];
 const COUNTDOWN_SEC = 5;
 const NO_ANSWER_PAUSE_MS = 3000;
-// shortcut: placeholder outcomes for testing; must match backend/routes/disposition.js.
+// shortcut: placeholder outcomes for teams without an LSQ activity form (sales); must match backend/routes/disposition.js.
 const OUTCOMES = [
   ['interested', 'Interested'],
   ['call_back', 'Call back'],
   ['not_interested', 'Not interested'],
   ['wrong_number', 'Wrong number'],
 ];
+
+// Activity Type, Function and Role carry over from this person's last saved activity (team defaults on day one).
+const stickyKey = (form) => `activity-sticky-${form.event}`;
+function startValues(form, connected) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(stickyKey(form)) || '{}'); } catch {}
+  return { ...form.defaults, ...saved, [form.connected?.schema]: connected };
+}
+function rememberSticky(form, vals) {
+  const keep = Object.fromEntries(form.sticky.filter((s) => vals[s]).map((s) => [s, vals[s]]));
+  try { localStorage.setItem(stickyKey(form), JSON.stringify(keep)); } catch {}
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dialable = (phone) => String(phone).replace(/[^\d+]/g, ''); // LSQ stores "+91-98…"
@@ -27,7 +40,9 @@ const pretty = (phone) => dialable(phone).replace(/^(\+91)?(\d{5})(\d{5})$/, (_,
 
 /**
  * Progressive dialer: one lead at a time from /api/queue.
- * idle → countdown → calling → (0 s: auto No answer | >0 s: outcome) → next lead.
+ * idle → countdown → calling → (0 s: reason | >0 s: outcome) → next lead.
+ * With an LSQ activity form (HR) the caller always marks it: one tap on a reason, or the form after a connected call.
+ * Without one (sales, for now) 0 s is saved as No answer by itself and connected calls get the placeholder outcomes.
  * Every lead dialed or skipped is saved, so the next /api/queue no longer returns it.
  */
 export default function DialerScreen() {
@@ -41,15 +56,21 @@ export default function DialerScreen() {
   const [talkSeconds, setTalkSeconds] = useState(0);
   const [last, setLast] = useState(null); // "Anosha Employee, interested"
   const [error, setError] = useState(null);
+  const [form, setForm] = useState(null); // the team's LSQ activity, or null
+  const [values, setValues] = useState({});
+  const [saving, setSaving] = useState(false);
 
   // Event handlers outlive renders, so the loop's state lives in refs.
   const phaseRef = useRef('idle');
   const pausedRef = useRef(false);
   const callRef = useRef(null); // { lead, ruleId, since, startedAt, sawOffhook, finishing }
   const setPhase = (p) => { phaseRef.current = p; setPhaseState(p); };
+  const formRef = useRef(null);
+  formRef.current = form;
 
   useEffect(() => {
     api('/api/me').then(setMe).catch((e) => setError(e.message));
+    api('/api/activity-form').then((r) => setForm(r.form)).catch((e) => setError(e.message));
     PermissionsAndroid.requestMultiple(PERMISSIONS).then((res) => {
       const ok = PERMISSIONS.every((p) => res[p] === PermissionsAndroid.RESULTS.GRANTED);
       setGranted(ok);
@@ -148,9 +169,14 @@ export default function DialerScreen() {
     }
     if (!row && !call.ended) { call.finishing = false; return; } // still on the call
     const seconds = row ? row.durationSec : 0;
+    setTalkSeconds(seconds);
 
+    if (formRef.current) {
+      setValues(startValues(formRef.current, seconds > 0 ? 'Yes' : 'No'));
+      setPhase(seconds > 0 ? 'outcome' : 'reason');
+      return;
+    }
     if (seconds > 0) {
-      setTalkSeconds(seconds);
       setPhase('outcome');
       return;
     }
@@ -160,18 +186,36 @@ export default function DialerScreen() {
     next();
   }
 
-  async function save(outcome, seconds) {
+  // Returns false when not saved; the call stays open so a marked activity can be sent again.
+  async function save(outcome, seconds, activity) {
     const { lead: l, startedAt } = callRef.current;
-    callRef.current = null;
     try {
       await api('/api/disposition', {
         method: 'POST',
-        body: { prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId },
+        body: { prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId, activity },
       });
+      callRef.current = null;
+      setError(null);
+      return true;
     } catch (e) {
       // shortcut: a failed save is shown, not retried; step 6 adds an offline outbox.
-      setError(`Not saved (${outcome}): ${e.message}`);
+      setError(`Not saved: ${e.message}`);
+      if (!activity) callRef.current = null;
+      return false;
     }
+  }
+
+  // Send the marked activity, remember the sticky fields for the next call, move on.
+  async function submit(vals) {
+    if (saving) return;
+    setSaving(true);
+    const connected = vals[form.connected?.schema] !== 'No';
+    const ok = await save(connected ? 'connected' : 'no_answer', talkSeconds, vals);
+    setSaving(false);
+    if (!ok) return;
+    rememberSticky(form, vals);
+    setLast(`${lead.name || 'Lead'}, ${connected ? 'connected' : (vals[form.connected.reason] || 'not connected').toLowerCase()}`);
+    next();
   }
 
   async function chooseOutcome(outcome, label) {
@@ -191,12 +235,14 @@ export default function DialerScreen() {
   const pause = () => { pausedRef.current = true; if (phaseRef.current === 'countdown') setPhase('paused'); };
   const stop = () => { pausedRef.current = true; setLead(null); setPhase('idle'); };
 
-  const active = ['countdown', 'calling', 'outcome', 'loading'].includes(phase) && lead;
+  const active = ['countdown', 'calling', 'outcome', 'reason', 'loading'].includes(phase) && lead;
+  const reasons = form?.connected ? form.fields.find((f) => f.schema === form.connected.reason).dependent.No : [];
   const left = queueInfo?.count ?? 0;
   const status = {
     countdown: `Calling in ${countdown}`,
     calling: 'On call',
-    outcome: `Connected, ${talkSeconds} s`,
+    outcome: talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
+    reason: 'Not answered: why?',
     loading: 'Next lead',
   }[phase];
 
@@ -208,7 +254,7 @@ export default function DialerScreen() {
       </View>
 
       {active ? (
-        <View style={styles.call}>
+        <View style={[styles.call, phase === 'outcome' && form && styles.callTop]}>
           <View style={styles.statusRow}>
             {phase === 'calling' && <View style={styles.liveDot} />}
             <Text style={styles.status}>{status}</Text>
@@ -218,7 +264,30 @@ export default function DialerScreen() {
           <Text style={styles.callMeta}>{lead.stage}</Text>
           {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
 
-          {phase === 'outcome' && (
+          {phase === 'reason' && (
+            <View style={styles.outcomes}>
+              {reasons.map((r) => (
+                <Pressable
+                  key={r}
+                  accessibilityRole="button"
+                  disabled={saving}
+                  style={({ pressed }) => [styles.outcome, pressed && styles.pressed]}
+                  onPress={() => submit({ ...values, [form.connected.reason]: r })}
+                >
+                  <Text style={styles.outcomeText}>{r}</Text>
+                </Pressable>
+              ))}
+              <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form</Text>
+            </View>
+          )}
+
+          {phase === 'outcome' && form && (
+            <View style={styles.formBox}>
+              <ActivityForm form={form} values={values} onChange={setValues} />
+            </View>
+          )}
+
+          {phase === 'outcome' && !form && (
             <View style={styles.outcomes}>
               {OUTCOMES.map(([value, label]) => (
                 <Pressable
@@ -286,7 +355,14 @@ export default function DialerScreen() {
             <Btn title="Call ended" kind="plain" onPress={() => finishCall(true)} style={styles.half} />
           </View>
         )}
-        {phase === 'outcome' && <Btn title="Pause after this" kind="plain" onPress={pause} />}
+        {phase === 'outcome' && !form && <Btn title="Pause after this" kind="plain" onPress={pause} />}
+        {phase === 'reason' && <Btn title="Pause after this" kind="plain" onPress={pause} />}
+        {phase === 'outcome' && form && (
+          <View style={styles.pair}>
+            <Btn title="Pause after" kind="plain" onPress={pause} style={styles.half} />
+            <Btn title={saving ? 'Saving…' : 'Save'} onPress={() => submit(values)} disabled={saving} style={styles.half} />
+          </View>
+        )}
       </View>
     </View>
   );
@@ -309,6 +385,9 @@ const styles = StyleSheet.create({
   pushed: { fontSize: 15, fontWeight: '600', color: colors.text },
 
   call: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
+  callTop: { justifyContent: 'flex-start', paddingTop: 24 },
+  formBox: { flex: 1, marginTop: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  fullForm: { fontSize: 15, color: colors.text, textDecorationLine: 'underline', paddingVertical: 16 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
   status: { fontSize: 15, color: colors.muted },

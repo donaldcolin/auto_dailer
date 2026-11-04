@@ -27,7 +27,8 @@
     },
     "plugins": [
       "expo-sqlite",
-      "expo-web-browser"
+      "expo-web-browser",
+      "@react-native-community/datetimepicker"
     ],
     "scheme": "dialer"
   }
