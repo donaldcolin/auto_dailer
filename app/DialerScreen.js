@@ -470,16 +470,19 @@ export default function DialerScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
           {queueInfo ? (
-            <>
-              <Text style={styles.count}>{left}</Text>
-              <Text style={styles.countLabel}>
-                {phase === 'done' || !left ? 'All caught up' : left === 1 ? 'lead to call' : 'leads to call'}
-              </Text>
-            </>
+            (phase === 'done' || !left) && (
+              <View style={styles.caughtUp}>
+                <Text style={styles.caughtUpTitle}>All caught up</Text>
+                <Text style={styles.muted}>No leads to call right now. New ones show up here; ☰ → Refresh leads checks at once.</Text>
+              </View>
+            )
           ) : (
             <View accessibilityLabel="Loading your leads">
-              <Skeleton style={{ width: 72, height: 64, marginTop: 8, marginBottom: 12 }} />
-              <Skeleton style={{ width: 110, height: 18, marginBottom: 36 }} />
+              <View style={styles.columns}>
+                <Skeleton style={{ flex: 1, height: 112, borderRadius: 16 }} />
+                <Skeleton style={{ flex: 1, height: 112, borderRadius: 16 }} />
+              </View>
+              <Skeleton style={{ width: 120, height: 14, marginTop: 28, marginBottom: 8 }} />
               {[0, 1, 2, 3, 4].map((i) => (
                 <View key={i} style={styles.row}>
                   <Skeleton style={{ flex: 1, height: 18, marginRight: 48 }} />
@@ -506,28 +509,45 @@ export default function DialerScreen() {
 
           {phase !== 'done' && !!left && (
             <>
-              <View style={styles.tabs} accessibilityRole="tablist">
-                {[['pushed', 'Pushed by TL', pushedLeads.length], ['mine', 'My leads', myLeads.length]].map(([key, label, n]) => (
+              <View style={styles.columns} accessibilityRole="tablist">
+                {[
+                  ['pushed', 1, 'Pushed by your TL', pushedLeads.length, pushedLeads.length ? 'Called first' : 'None right now'],
+                  ['mine', 2, 'Your leads', myLeads.length, pushedLeads.length ? 'Called next, newest first' : 'Newest first'],
+                ].map(([key, rank, label, n, hint]) => (
                   <Pressable
                     key={key}
                     accessibilityRole="tab"
                     accessibilityState={{ selected: shownTab === key }}
-                    style={[styles.tab, shownTab === key && styles.tabOn]}
+                    accessibilityLabel={`${rank}. ${label}, ${n} leads. ${hint}`}
+                    style={[styles.column, shownTab === key && styles.columnOn]}
                     onPress={() => setTab(key)}
                   >
-                    <Text style={[styles.tabText, shownTab === key && styles.tabTextOn]}>{label} {n}</Text>
+                    <View style={styles.columnTop}>
+                      <View style={[styles.rank, shownTab === key && styles.rankOn]}>
+                        <Text style={[styles.rankText, shownTab === key && styles.rankTextOn]}>{rank}</Text>
+                      </View>
+                      <Text style={[styles.columnCount, !n && styles.orderCountZero]}>{n}</Text>
+                    </View>
+                    <Text style={styles.orderLabel} numberOfLines={1}>{label}</Text>
+                    <Text style={styles.orderHint} numberOfLines={2}>{hint}</Text>
                   </Pressable>
                 ))}
               </View>
-              <Text style={styles.tabHint}>
-                {pushedLeads.length ? 'Start calls pushed leads first, then your leads.' : 'Your TL hasn\'t pushed any leads.'}
-              </Text>
-              {tabLeads.slice(0, 50).map((l) => (
-                <View key={l.prospectId} style={styles.row}>
-                  <Text style={styles.rowName} numberOfLines={1}>{l.name || 'No name'}</Text>
-                  <Text style={styles.muted} numberOfLines={1}>{l.stage}</Text>
-                </View>
-              ))}
+              <Text style={styles.listTitle}>{shownTab === 'pushed' ? 'Pushed by your TL' : 'Your leads'}</Text>
+              {tabLeads.slice(0, 50).map((l) => {
+                const d = Object.fromEntries((l.details || []).map((x) => [x.label, x.value]));
+                const calls = d.Calls?.replace(/^(\d+) made/, (_, n) => `${n} ${n === '1' ? 'call' : 'calls'}`);
+                const about = [d.Source?.split(',')[0], d.Location?.split(',')[0], calls].filter(Boolean).join(', ');
+                return (
+                  <View key={l.prospectId} style={styles.row}>
+                    <View style={styles.rowBody}>
+                      <Text style={styles.rowName} numberOfLines={1}>{l.name || 'No name'}</Text>
+                      <Text style={styles.rowAbout} numberOfLines={1}>{about || l.stage}</Text>
+                    </View>
+                    {!!d['Lead age'] && <Text style={styles.rowAge}>{d['Lead age']}</Text>}
+                  </View>
+                );
+              })}
               {tabLeads.length > 50 && <Text style={styles.more}>and {tabLeads.length - 50} more</Text>}
               {!tabLeads.length && <Text style={styles.more}>None right now.</Text>}
             </>
@@ -590,17 +610,29 @@ const styles = StyleSheet.create({
 
   list: { paddingHorizontal: 24, paddingTop: 40, paddingBottom: 24 },
   count: { fontSize: 72, fontWeight: '300', color: colors.text, lineHeight: 80 },
-  countLabel: { fontSize: 17, color: colors.text, marginBottom: 32 },
+  countLabel: { fontSize: 17, color: colors.text, marginBottom: 20 },
   notice: { fontSize: 15, lineHeight: 22, color: colors.text, marginTop: 24 },
   noticeLink: { textDecorationLine: 'underline' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
-  rowName: { flex: 1, fontSize: 17, color: colors.text },
-  tabs: { flexDirection: 'row', gap: 4, padding: 4, borderRadius: 14, backgroundColor: '#F2F2F2', marginTop: 8 },
-  tab: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  tabOn: { backgroundColor: colors.bg, elevation: 1 },
-  tabText: { fontSize: 15, color: colors.muted, fontWeight: '500' },
-  tabTextOn: { color: colors.text },
-  tabHint: { fontSize: 13, color: colors.muted, marginTop: 8, marginBottom: 4 },
+  rowBody: { flex: 1, minWidth: 0, gap: 2 },
+  rowName: { fontSize: 17, color: colors.text },
+  rowAbout: { fontSize: 13, color: colors.muted },
+  rowAge: { fontSize: 13, color: colors.muted },
+  caughtUp: { gap: 8, marginBottom: 24 },
+  caughtUpTitle: { fontSize: 34, fontWeight: '300', color: colors.text },
+  columns: { flexDirection: 'row', gap: 12 },
+  column: { ...card, flex: 1, padding: 16, gap: 2 },
+  columnOn: { borderColor: colors.text, borderWidth: 1.5 },
+  columnTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  columnCount: { fontSize: 30, fontWeight: '300', color: colors.text, fontVariant: ['tabular-nums'] },
+  rank: { width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: '#C9CBD0', alignItems: 'center', justifyContent: 'center' },
+  rankOn: { backgroundColor: colors.text, borderColor: colors.text },
+  rankText: { fontSize: 14, fontWeight: '600', color: colors.muted },
+  rankTextOn: { color: colors.bg },
+  orderLabel: { fontSize: 17, fontWeight: '600', color: colors.text },
+  orderHint: { fontSize: 13, color: colors.muted, marginTop: 2 },
+  orderCountZero: { color: colors.muted },
+  listTitle: { fontSize: 13, color: colors.muted, marginTop: 24, marginBottom: 2 },
   more: { fontSize: 15, color: colors.muted, paddingVertical: 16 },
 
   call: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
