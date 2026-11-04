@@ -27,14 +27,6 @@
     },
     "plugins": [
       "expo-sqlite",
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "usesCleartextTraffic": true
-          }
-        }
-      ],
       "expo-web-browser"
     ],
     "scheme": "dialer"

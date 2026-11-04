@@ -85,10 +85,23 @@ export default function DialerScreen() {
     return () => clearTimeout(t);
   }, [phase, countdown]);
 
+  // While not dialing, keep the list fresh so a TL's push shows up. Never starts dialing by itself.
+  useEffect(() => {
+    if (phase !== 'idle' && phase !== 'done') return;
+    const t = setInterval(() => refresh().catch(() => {}), 30000);
+    return () => clearInterval(t);
+  }, [phase]);
+
   async function loadQueue() {
     const q = await api('/api/queue');
     setQueueInfo({ count: q.leads.length, source: q.source, rule: q.rule, upcoming: q.leads.slice(0, 5) });
     return q;
+  }
+
+  // Reload the list only; dialing always waits for Start.
+  async function refresh() {
+    const q = await loadQueue();
+    if (q.leads.length && phaseRef.current === 'done') setPhase('idle');
   }
 
   async function next() {
@@ -251,7 +264,9 @@ export default function DialerScreen() {
 
       <View style={styles.footer}>
         {['idle', 'done'].includes(phase) && (
-          <Btn title={phase === 'done' ? 'Check again' : 'Start'} onPress={start} disabled={!granted || (phase === 'idle' && !left)} />
+          phase === 'done'
+            ? <Btn title="Check again" onPress={() => refresh().catch((e) => setError(e.message))} />
+            : <Btn title="Start" onPress={start} disabled={!granted || !left} />
         )}
         {phase === 'paused' && (
           <View style={styles.pair}>
