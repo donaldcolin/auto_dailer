@@ -190,4 +190,4 @@ async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
   };
 }
 
-module.exports = { details, getQueue, getListLeads, getOwnedLeads, ownQueue, readList };
+module.exports = { details, istTime, readLeadsByIds, getQueue, getListLeads, getOwnedLeads, ownQueue, readList };

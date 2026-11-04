@@ -117,4 +117,4 @@ async function postActivity({ event, prospectId, ownerId, at, fields, note }) {
   return data.Message.Id;
 }
 
-module.exports = { activityEventFor, getForm, toForm, toLsqFields, postActivity };
+module.exports = { FORMS, activityEventFor, getForm, toForm, toLsqFields, postActivity };

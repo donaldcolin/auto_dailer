@@ -49,6 +49,34 @@ function LeadDetails({ details, compact }) {
   );
 }
 
+// The lead's latest LSQ activities: earlier HR Activities with what was marked, calls, pushes…
+function LeadHistory({ history, compact }) {
+  if (!history) return null;
+  const items = compact ? (history.items || []).slice(0, 2) : history.items || [];
+  return (
+    <View style={compact ? styles.detailsCompact : styles.history}>
+      {!compact && <Text style={styles.historyTitle}>Recent activity</Text>}
+      {history.failed && <Text style={styles.historySub}>Couldn't load past activity.</Text>}
+      {!history.failed && !history.items && <Skeleton style={{ height: 14, width: '70%', marginVertical: 6 }} />}
+      {history.items && !history.items.length && <Text style={styles.historySub}>No earlier activity.</Text>}
+      {items.map((h, i) => (
+        <View key={i} style={[styles.historyRow, compact && { paddingVertical: 2 }]}>
+          <View style={styles.historyHead}>
+            <Text style={[styles.historyWhat, compact && styles.detailSmall]} numberOfLines={1}>{h.what}</Text>
+            <Text style={[styles.historyAt, compact && styles.detailSmall]}>{h.at}</Text>
+          </View>
+          {!!(h.detail || h.note) && (
+            <Text style={[styles.historySub, compact && styles.detailSmall]} numberOfLines={compact ? 1 : 3}>
+              {[h.detail, h.note && `"${h.note}"`].filter(Boolean).join('. ')}
+            </Text>
+          )}
+          {!compact && !!h.by && <Text style={styles.historyBy}>{h.by}</Text>}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dialable = (phone) => String(phone).replace(/[^\d+]/g, ''); // LSQ stores "+91-98…"
 // "+91-8431772316" → "+91 84317 72316"
@@ -81,7 +109,8 @@ export default function DialerScreen() {
   const [saving, setSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [savingReason, setSavingReason] = useState(null); // the reason row just tapped, shown as "Saving…"
+  const [savingReason, setSavingReason] = useState(null);
+  const [history, setHistory] = useState(null); // { id, items } | { id, failed } for the current lead // the reason row just tapped, shown as "Saving…"
 
   // Event handlers outlive renders, so the loop's state lives in refs.
   const phaseRef = useRef('idle');
@@ -130,6 +159,16 @@ export default function DialerScreen() {
     const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [phase, countdown]);
+
+  // Load the current lead's recent LSQ activity once per lead, while the countdown runs.
+  useEffect(() => {
+    const id = lead?.prospectId;
+    if (!id || history?.id === id) return;
+    setHistory({ id, items: null });
+    api(`/api/lead/${encodeURIComponent(id)}/history`)
+      .then((r) => setHistory((h) => (h?.id === id ? { id, items: r.history } : h)))
+      .catch(() => setHistory((h) => (h?.id === id ? { id, failed: true } : h)));
+  }, [lead?.prospectId]);
 
   // Foreground service while the loop runs, so Android doesn't freeze or kill it between calls.
   const looping = !['idle', 'done', 'paused'].includes(phase);
@@ -394,6 +433,7 @@ export default function DialerScreen() {
             <Text style={styles.cardMeta}>{pretty(lead.phone)}</Text>
             {!!lead.stage && <Text style={styles.cardMeta}>{lead.stage}{lead.pushed ? ', pushed by your TL' : ''}</Text>}
             <LeadDetails details={lead.details} compact />
+            <LeadHistory history={history?.id === lead.prospectId ? history : null} compact />
           </View>
 
           <Text style={styles.sectionTitle}>
@@ -456,7 +496,7 @@ export default function DialerScreen() {
           <Skeleton style={{ width: 110, height: 18 }} />
         </View>
       ) : active ? (
-        <View style={styles.call}>
+        <ScrollView contentContainerStyle={styles.call}>
           <View style={styles.statusRow}>
             {phase === 'calling' && <View style={styles.liveDot} />}
             <Text style={styles.status}>{status}</Text>
@@ -466,7 +506,8 @@ export default function DialerScreen() {
           <Text style={styles.callMeta}>{lead.stage}</Text>
           {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
           <LeadDetails details={lead.details} />
-        </View>
+          <LeadHistory history={history?.id === lead.prospectId ? history : null} />
+        </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
           {queueInfo ? (
@@ -635,7 +676,15 @@ const styles = StyleSheet.create({
   listTitle: { fontSize: 13, color: colors.muted, marginTop: 24, marginBottom: 2 },
   more: { fontSize: 15, color: colors.muted, paddingVertical: 16 },
 
-  call: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
+  call: { flexGrow: 1, paddingHorizontal: 24, paddingVertical: 24, justifyContent: 'center' },
+  history: { marginTop: 24, gap: 4 },
+  historyTitle: { fontSize: 13, color: colors.muted, marginBottom: 4 },
+  historyRow: { paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  historyHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  historyWhat: { flex: 1, fontSize: 15, fontWeight: '500', color: colors.text },
+  historyAt: { fontSize: 13, color: colors.muted },
+  historySub: { fontSize: 14, color: colors.muted, marginTop: 2 },
+  historyBy: { fontSize: 13, color: colors.muted, marginTop: 1 },
   mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
   leadCard: { ...card, backgroundColor: '#F7F7F7', padding: 16, marginBottom: 24 },
   cardStatus: { fontSize: 13, color: colors.muted, marginBottom: 4 },

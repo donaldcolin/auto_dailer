@@ -103,3 +103,20 @@ test('the profile is read once a minute per user, not on every request', async (
   await request(app).get('/api/me').set('Authorization', 'Bearer t-cache');
   expect(getProfile).toHaveBeenCalledTimes(1);
 });
+
+test('/api/lead/:id/history: an associate only sees their own leads', async () => {
+  const queue = require('../services/queue');
+  const history = require('../services/history');
+  const byIds = jest.spyOn(queue, 'readLeadsByIds');
+  const hist = jest.spyOn(history, 'leadHistory').mockResolvedValue([{ what: 'HR Activity' }]);
+  as('associate'); // lsq_user_id L1
+  const get = id => request(app).get(`/api/lead/${id}/history`).set('Authorization', 'Bearer t-hist');
+
+  byIds.mockResolvedValueOnce([{ prospectId: 'theirs', ownerId: 'L9' }]);
+  expect((await get('theirs')).status).toBe(404);
+  byIds.mockResolvedValueOnce([{ prospectId: 'mine', ownerId: 'L1' }]);
+  const ok = await get('mine');
+  expect(ok.status).toBe(200);
+  expect(ok.body.history).toEqual([{ what: 'HR Activity' }]);
+  byIds.mockRestore(); hist.mockRestore();
+});
