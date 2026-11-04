@@ -67,7 +67,8 @@ export default function DialerScreen() {
   const [canFront, setCanFront] = useState(true);
   const [phase, setPhaseState] = useState('idle'); // idle | loading | countdown | calling | outcome | paused | done
   const [lead, setLead] = useState(null);
-  const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, upcoming }
+  const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, leads }
+  const [tab, setTab] = useState(null); // 'pushed' | 'mine'; null = pushed when there are any
   const [countdown, setCountdown] = useState(COUNTDOWN_SEC);
   const [talkSeconds, setTalkSeconds] = useState(0);
   const [toast, setToast] = useState(null); // "HR Activity saved for Akhila", shown for a moment after each save
@@ -157,7 +158,7 @@ export default function DialerScreen() {
   function pending() {
     const { leads, rule, source } = queueRef.current;
     const left = leads.filter((l) => !handledRef.current.has(l.prospectId));
-    setQueueInfo({ count: left.length, source, rule, upcoming: left.slice(0, 5) });
+    setQueueInfo({ count: left.length, source, rule, leads: left });
     return left;
   }
 
@@ -327,6 +328,10 @@ export default function DialerScreen() {
   const marking = phase === 'outcome' || phase === 'reason'; // after a call: lead card on top, what to mark below
   const reasons = form?.connected ? form.fields.find((f) => f.schema === form.connected.reason).dependent.No : [];
   const left = queueInfo?.count ?? 0;
+  const pushedLeads = (queueInfo?.leads || []).filter((l) => l.pushed);
+  const myLeads = (queueInfo?.leads || []).filter((l) => !l.pushed);
+  const shownTab = tab || (pushedLeads.length ? 'pushed' : 'mine');
+  const tabLeads = shownTab === 'pushed' ? pushedLeads : myLeads;
   const status = {
     countdown: `Calling in ${countdown}`,
     calling: 'On call',
@@ -499,12 +504,34 @@ export default function DialerScreen() {
             </Text>
           )}
 
-          {phase !== 'done' && (queueInfo?.upcoming || []).map((l) => (
-            <View key={l.prospectId} style={styles.row}>
-              <Text style={styles.rowName} numberOfLines={1}>{l.name || 'No name'}</Text>
-              {l.pushed ? <Text style={styles.pushed}>Pushed</Text> : <Text style={styles.muted}>{l.stage}</Text>}
-            </View>
-          ))}
+          {phase !== 'done' && !!left && (
+            <>
+              <View style={styles.tabs} accessibilityRole="tablist">
+                {[['pushed', 'Pushed by TL', pushedLeads.length], ['mine', 'My leads', myLeads.length]].map(([key, label, n]) => (
+                  <Pressable
+                    key={key}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: shownTab === key }}
+                    style={[styles.tab, shownTab === key && styles.tabOn]}
+                    onPress={() => setTab(key)}
+                  >
+                    <Text style={[styles.tabText, shownTab === key && styles.tabTextOn]}>{label} {n}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.tabHint}>
+                {pushedLeads.length ? 'Start calls pushed leads first, then your leads.' : 'Your TL hasn\'t pushed any leads.'}
+              </Text>
+              {tabLeads.slice(0, 50).map((l) => (
+                <View key={l.prospectId} style={styles.row}>
+                  <Text style={styles.rowName} numberOfLines={1}>{l.name || 'No name'}</Text>
+                  <Text style={styles.muted} numberOfLines={1}>{l.stage}</Text>
+                </View>
+              ))}
+              {tabLeads.length > 50 && <Text style={styles.more}>and {tabLeads.length - 50} more</Text>}
+              {!tabLeads.length && <Text style={styles.more}>None right now.</Text>}
+            </>
+          )}
         </ScrollView>
       )}
 
@@ -568,7 +595,13 @@ const styles = StyleSheet.create({
   noticeLink: { textDecorationLine: 'underline' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   rowName: { flex: 1, fontSize: 17, color: colors.text },
-  pushed: { fontSize: 15, fontWeight: '600', color: colors.text },
+  tabs: { flexDirection: 'row', gap: 4, padding: 4, borderRadius: 14, backgroundColor: '#F2F2F2', marginTop: 8 },
+  tab: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  tabOn: { backgroundColor: colors.bg, elevation: 1 },
+  tabText: { fontSize: 15, color: colors.muted, fontWeight: '500' },
+  tabTextOn: { color: colors.text },
+  tabHint: { fontSize: 13, color: colors.muted, marginTop: 8, marginBottom: 4 },
+  more: { fontSize: 15, color: colors.muted, paddingVertical: 16 },
 
   call: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
   mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
