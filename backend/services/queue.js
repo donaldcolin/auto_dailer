@@ -15,8 +15,9 @@ const SKIP_BY_DEFAULT = new Set(['Signup Done', 'Payment Done', 'Customer', 'Dis
 // HR keeps every candidate in one stage ("HR New Lead") and records outcomes in HR Activity, so its default
 // queue is the candidates nobody has spoken to yet (Donald, 2026-11-04). Unanswered ones return on later days.
 const HR_EVENT = 263;
+// Only real Team HR members: people added to the HR form by email (Donald testing, the HR manager) keep their own queue.
 const keepByDefault = profile => {
-  const hr = activityEventFor(profile) === HR_EVENT;
+  const hr = activityEventFor(profile) === HR_EVENT && (profile.groups || []).includes('Team HR');
   return l => !SKIP_BY_DEFAULT.has(l.stage) && !(hr && l.connects);
 };
 // One HR associate owns ~7,700 leads; reading them all takes over a minute and trips LSQ's rate limit.

@@ -142,3 +142,11 @@ test('a big owner: stops at 300 dialable leads instead of reading every page', a
   expect(q.leads[0].prospectId).toBe('b0'); // newest first, as LSQ sorts them
   expect(ownedPagesRead).toBe(2);
 });
+
+test('HR form by email only (Donald testing): own leads, not the never-connected rule', async () => {
+  activeRuleFor.mockResolvedValue(null);
+  owned = [{ ProspectID: 'spoken', OwnerId: 'L7', Mobile: '1', ProspectStage: 'HR New Lead', mx_Total_Connects: '5' }];
+  const q = await getQueue({ id: 'u7', email: 'donald.colin@kalvium.com', lsq_user_id: 'L7', groups: [] });
+  expect(q.leads.map(l => l.prospectId)).toEqual(['spoken']);
+});
+
