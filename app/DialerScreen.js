@@ -112,7 +112,9 @@ export default function DialerScreen() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [savingReason, setSavingReason] = useState(null);
-  const [history, setHistory] = useState(null); // { id, items } | { id, failed } for the current lead // the reason row just tapped, shown as "Saving…"
+  // Recent LSQ activity by lead id: { items } | { failed } | {} while loading. The next lead's is loaded early.
+  const [histories, setHistories] = useState({});
+  const historyAsked = useRef(new Set()); // the reason row just tapped, shown as "Saving…"
 
   // Event handlers outlive renders, so the loop's state lives in refs.
   const phaseRef = useRef('idle');
@@ -165,14 +167,19 @@ export default function DialerScreen() {
     return () => clearTimeout(t);
   }, [phase, countdown, held]);
 
-  // Load the current lead's recent LSQ activity once per lead, while the countdown runs.
+  // Load the current lead's activity, and the next lead's in the background, so it's ready when that lead comes up.
+  function loadHistory(id) {
+    if (!id || historyAsked.current.has(id)) return;
+    historyAsked.current.add(id);
+    api(`/api/lead/${encodeURIComponent(id)}/history`)
+      .then((r) => setHistories((h) => ({ ...h, [id]: { items: r.history } })))
+      .catch(() => { historyAsked.current.delete(id); setHistories((h) => ({ ...h, [id]: { failed: true } })); });
+  }
   useEffect(() => {
     const id = lead?.prospectId;
-    if (!id || history?.id === id) return;
-    setHistory({ id, items: null });
-    api(`/api/lead/${encodeURIComponent(id)}/history`)
-      .then((r) => setHistory((h) => (h?.id === id ? { id, items: r.history } : h)))
-      .catch(() => setHistory((h) => (h?.id === id ? { id, failed: true } : h)));
+    if (!id) return;
+    loadHistory(id);
+    loadHistory(queueRef.current.leads.find((l) => l.prospectId !== id && !handledRef.current.has(l.prospectId))?.prospectId);
   }, [lead?.prospectId]);
 
   // Foreground service while the loop runs, so Android doesn't freeze or kill it between calls.
@@ -438,7 +445,7 @@ export default function DialerScreen() {
             <Text style={styles.cardMeta}>{pretty(lead.phone)}</Text>
             {!!lead.stage && <Text style={styles.cardMeta}>{lead.stage}{lead.pushed ? ', pushed by your TL' : ''}</Text>}
             <LeadDetails details={lead.details} compact />
-            <LeadHistory history={history?.id === lead.prospectId ? history : null} compact />
+            <LeadHistory history={histories[lead.prospectId] || {}} compact />
           </View>
 
           <Text style={styles.sectionTitle}>
@@ -515,7 +522,7 @@ export default function DialerScreen() {
           <Text style={styles.callMeta}>{lead.stage}</Text>
           {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
           <LeadDetails details={lead.details} />
-          <LeadHistory history={history?.id === lead.prospectId ? history : null} />
+          <LeadHistory history={histories[lead.prospectId] || {}} />
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
