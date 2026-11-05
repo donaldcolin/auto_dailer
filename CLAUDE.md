@@ -21,7 +21,9 @@ SIM-based progressive auto-dialer for associates (counsellors), plus a rules das
 - Access by role: managers see all teams, TLs see their own sales group. Roles and groups come from LSQ `Users.Get` (`Role`, `MemberOfGroups`).
 - TLs push leads to the dialer by adding LSQ custom activity **283 "Auto Dialer"** to them (manager's choice, 2026-11-03). Pushed leads go first in the owner's queue (`backend/services/pushed.js`). The in-tab filter builder is parked.
 - No reports or stats in this app.
-- After each call the caller marks their team's LSQ activity in the app; the dialer posts it (`backend/services/activity.js`). HR (Team HR + listed emails) = **263 HR Activity** (2026-11-04). Sales = BDA 218, blocked until an admin makes "Spoke with" optional. Created By = the API key user (Donald); Owner = the caller.
+- After each call the caller marks their team's LSQ activity in the app; the dialer posts it (`backend/services/activity.js`) with **that person's own LSQ keys**, so LSQ shows them as Created By (HR's reports count by it, decided 2026-11-05). Never fall back to the org key for this.
+- **Personal keys**: each person pastes theirs once at setup. Encrypted in `user_lsq_keys` (AES-256-GCM, `LSQ_KEYS_SECRET` on Railway; losing it means everyone re-enters). Never in the APK, never logged or returned. The org key does all reads.
+- **Modes**: `users.mode` is `hr` (activity 263) or `sales` (218), chosen once in the app's setup and locked. Sales stays closed until an LSQ admin makes BDA's "Spoke with" optional, then set `SALES_READY=1` on Railway. To fix a wrong team, in Supabase: `update users set mode = null where email = '...';` (the person sets it again on next open).
 - Call logging to LSQ is done by **Callyzer** (installed on every associate's phone; API docs: https://developers.callyzer.co/v2.2/). The dialer must not write call activities itself. That would log calls twice.
 - Retries are parked for Donald and the manager to decide.
 - Recording: the phone's own auto-record + Callyzer upload. The dialer must place calls through the system phone app (`ACTION_CALL`) so both still see them.

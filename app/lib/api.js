@@ -9,6 +9,6 @@ export async function api(path, { method = 'GET', body } = {}) {
     body: body && JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(json?.error || `HTTP ${res.status}`), { code: json?.code });
   return json;
 }

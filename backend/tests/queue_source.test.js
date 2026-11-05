@@ -133,7 +133,7 @@ test('HR: only candidates nobody has spoken to (Total Connects 0), and never clo
     { ProspectID: 'spoken', OwnerId: 'L5', Mobile: '3', ProspectStage: 'HR New Lead', mx_Total_Connects: '2' },
     { ProspectID: 'closed', OwnerId: 'L5', Mobile: '4', ProspectStage: 'Customer', mx_Total_Connects: '0' },
   ];
-  const q = await getQueue({ id: 'u5', email: 'x@kalvium.com', lsq_user_id: 'L5', groups: ['Team HR'] });
+  const q = await getQueue({ id: 'u5', mode: 'hr', lsq_user_id: 'L5', groups: ['Team HR'] });
   expect(q.leads.map(l => l.prospectId)).toEqual(['fresh', 'blank']);
   expect(q.leads[0].connects).toBeUndefined(); // internal, not sent to the app
 });
@@ -147,10 +147,10 @@ test('a big owner: stops at 300 dialable leads instead of reading every page', a
   expect(ownedPagesRead).toBe(2);
 });
 
-test('HR form by email only (Donald testing): own leads, not the never-connected rule', async () => {
+test('HR mode outside Team HR (Donald testing): own leads, not the never-connected rule', async () => {
   activeRuleFor.mockResolvedValue(null);
   owned = [{ ProspectID: 'spoken', OwnerId: 'L7', Mobile: '1', ProspectStage: 'HR New Lead', mx_Total_Connects: '5' }];
-  const q = await getQueue({ id: 'u7', email: 'donald.colin@kalvium.com', lsq_user_id: 'L7', groups: [] });
+  const q = await getQueue({ id: 'u7', mode: 'hr', lsq_user_id: 'L7', groups: [] });
   expect(q.leads.map(l => l.prospectId)).toEqual(['spoken']);
 });
 

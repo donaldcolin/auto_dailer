@@ -62,7 +62,10 @@ function requireAccess(allowed) {
   };
 }
 
+// After a change to the person's row (their mode at setup), so it applies at once.
+const forgetProfile = userId => _profileCache.delete(userId);
+
 // Tests switch the same user between roles.
 const clearAuthCache = () => { _userCache.clear(); _profileCache.clear(); };
 
-module.exports = { requireAuth, requireAccess, clearAuthCache };
+module.exports = { requireAuth, requireAccess, forgetProfile, clearAuthCache };

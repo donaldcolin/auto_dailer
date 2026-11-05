@@ -1,5 +1,6 @@
 const mockPost = jest.fn();
-jest.mock('../config/lsq', () => ({ lsqClient: { post: (...a) => mockPost(...a), get: jest.fn() }, lsqUrl: p => p }));
+jest.mock('../config/lsq', () => ({ lsqClient: { post: (...a) => mockPost(...a), get: jest.fn() }, lsqUrl: p => p, lsqParams: () => ({ host: 'https://lsq' }) }));
+jest.mock('../config/supabase', () => ({}));
 const { activityEventFor, toForm, toLsqFields, postActivity } = require('../services/activity');
 
 // A cut-down HR Activity (263) as ActivityTypes.Get returns it: option sets are JSON strings.
@@ -23,10 +24,15 @@ const TYPE = {
 };
 const form = toForm(TYPE);
 
-test('Team HR, the HR manager and Donald mark HR Activity; sales has no form yet', () => {
-  expect(activityEventFor({ email: 'x@kalvium.com', groups: ['Team HR'] })).toBe(263);
-  expect(activityEventFor({ email: 'Amulya.Gowda@kalvium.com', groups: [] })).toBe(263);
-  expect(activityEventFor({ email: 'x@kalvium.com', groups: ['Team Hema'] })).toBeNull();
+test('the mode picks the activity: HR 263, Sales 218, nothing before setup', () => {
+  expect(activityEventFor({ mode: 'hr' })).toBe(263);
+  expect(activityEventFor({ mode: 'sales' })).toBe(218);
+  expect(activityEventFor({ groups: ['Team HR'] })).toBeNull();
+});
+
+test('fields LSQ would auto-fill go out blank (BDA entrance prep)', () => {
+  const out = toLsqFields({ ...form, alwaysBlank: ['mx_Custom_37'] }, { mx_Custom_1: 'No' });
+  expect(out.fields).toContainEqual({ SchemaName: 'mx_Custom_37', Value: '' });
 });
 
 test('form: LSQ order, no Owner or hidden fields, dependent options by parent, call-connected pair found', () => {
@@ -57,10 +63,12 @@ test('values LSQ would reject or store wrong are refused', () => {
   expect(() => toLsqFields(strict, {})).toThrow(/Call Connected is required/);
 });
 
-test('post: on the lead, owned by the caller, at the call time', async () => {
+test('post: with the caller\'s own keys, on the lead, owned by the caller, at the call time', async () => {
   mockPost.mockResolvedValue({ data: { Status: 'Success', Message: { Id: 'act-1' } } });
-  const id = await postActivity({ event: 263, prospectId: 'p1', ownerId: 'L1', at: new Date('2026-11-04T09:00:00Z'), fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }], note: '' });
+  const id = await postActivity({ keys: { accessKey: 'ak', secretKey: 'sk' }, event: 263, prospectId: 'p1', ownerId: 'L1', at: new Date('2026-11-04T09:00:00Z'), fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }], note: '' });
   expect(id).toBe('act-1');
+  expect(mockPost.mock.calls[0][0]).toBe('https://lsq/ProspectActivity.svc/Create'); // no keys in the URL
+  expect(mockPost.mock.calls[0][2].headers).toEqual({ 'x-LSQ-AccessKey': 'ak', 'x-LSQ-SecretKey': 'sk' });
   expect(mockPost.mock.calls[0][1]).toEqual({
     RelatedProspectId: 'p1', ActivityEvent: 263, ActivityNote: '', ActivityDateTime: '2026-11-04 09:00:00',
     Fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }, { SchemaName: 'Owner', Value: 'L1' }],

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
+import SetupScreen from './SetupScreen';
 import Dialer from './modules/dialer';
 import { api } from './lib/api';
 import { supabase } from './lib/supabase';
@@ -13,15 +14,6 @@ const PERMISSIONS = [
   PermissionsAndroid.PERMISSIONS.READ_CALL_LOG,
 ];
 const COUNTDOWN_SEC = 5;
-const NO_ANSWER_PAUSE_MS = 3000;
-// shortcut: placeholder outcomes for teams without an LSQ activity form (sales); must match backend/routes/disposition.js.
-const OUTCOMES = [
-  ['interested', 'Interested'],
-  ['call_back', 'Call back'],
-  ['not_interested', 'Not interested'],
-  ['wrong_number', 'Wrong number'],
-];
-
 // Activity Type, Function and Role carry over from this person's last saved activity (team defaults on day one).
 const stickyKey = (form) => `activity-sticky-${form.event}`;
 function startValues(form, connected) {
@@ -85,12 +77,11 @@ const pretty = (phone) => dialable(phone).replace(/^(\+91)?(\d{5})(\d{5})$/, (_,
 /**
  * Progressive dialer: one lead at a time from /api/queue.
  * idle → countdown → calling → (0 s: reason | >0 s: outcome) → next lead.
- * With an LSQ activity form (HR) the caller always marks it: one tap on a reason, or the form after a connected call.
- * Without one (sales, for now) 0 s is saved as No answer by itself and connected calls get the placeholder outcomes.
+ * The caller always marks their team's LSQ activity: one tap on a reason, or the form after a connected call.
  * Every lead dialed or skipped is saved, so the next /api/queue no longer returns it.
  */
-export default function DialerScreen() {
-  const [me, setMe] = useState(null);
+export default function DialerScreen({ me }) {
+  const [keyOpen, setKeyOpen] = useState(false); // update-your-key screen, on top so a marked activity isn't lost
   const [granted, setGranted] = useState(false);
   const [canFront, setCanFront] = useState(true);
   const [phase, setPhaseState] = useState('idle'); // idle | loading | countdown | calling | outcome | paused | done
@@ -127,7 +118,6 @@ export default function DialerScreen() {
   formRef.current = form;
 
   useEffect(() => {
-    api('/api/me').then(setMe).catch((e) => setError(e.message));
     loadForm();
     PermissionsAndroid.requestMultiple(PERMISSIONS).then((res) => {
       const ok = PERMISSIONS.every((p) => res[p] === PermissionsAndroid.RESULTS.GRANTED);
@@ -200,7 +190,7 @@ export default function DialerScreen() {
   function loadForm() {
     setFormState('loading');
     api('/api/activity-form')
-      .then((r) => { setForm(r.form); setFormState('ready'); })
+      .then((r) => { setForm(r.form); setFormState(r.form ? 'ready' : 'failed'); })
       .catch(() => setFormState('failed'));
   }
 
@@ -302,19 +292,8 @@ export default function DialerScreen() {
     const seconds = row ? row.durationSec : 0;
     setTalkSeconds(seconds);
 
-    if (formRef.current) {
-      setValues(startValues(formRef.current, seconds > 0 ? 'Yes' : 'No'));
-      setPhase(seconds > 0 ? 'outcome' : 'reason');
-      return;
-    }
-    if (seconds > 0) {
-      setPhase('outcome');
-      return;
-    }
-    await save('no_answer', 0);
-    showToast(`No answer saved for ${call.lead.name || 'lead'}`);
-    await sleep(NO_ANSWER_PAUSE_MS);
-    next();
+    setValues(startValues(formRef.current, seconds > 0 ? 'Yes' : 'No'));
+    setPhase(seconds > 0 ? 'outcome' : 'reason');
   }
 
   // Returns false when not saved; the call stays open so a marked activity can be sent again.
@@ -334,7 +313,8 @@ export default function DialerScreen() {
     } catch (e) {
       // shortcut: a failed save is shown, not retried; step 6 adds an offline outbox.
       setError(`Not saved: ${e.message}`);
-      // Without an activity form the loop moves on; the lead comes back on the next full load.
+      if (e.code === 'lsq_key_rejected') setKeyOpen(true);
+      // A skip has nothing to lose, and the loop has moved on; the lead comes back on the next full load.
       if (!activity) done();
       return false;
     }
@@ -350,12 +330,6 @@ export default function DialerScreen() {
     if (!ok) return;
     rememberSticky(form, vals);
     showToast(`${form.name} saved for ${lead.name || 'lead'}`);
-    next();
-  }
-
-  async function chooseOutcome(outcome, label) {
-    await save(outcome, talkSeconds);
-    showToast(`${label} saved for ${lead.name || 'lead'}`);
     next();
   }
 
@@ -416,6 +390,15 @@ export default function DialerScreen() {
         )}
       </View>
 
+      <Modal visible={keyOpen} animationType="slide" onRequestClose={() => setKeyOpen(false)}>
+        <SetupScreen
+          me={me}
+          keysOnly
+          onCancel={() => setKeyOpen(false)}
+          onDone={() => { setKeyOpen(false); setError(null); showToast('LeadSquared key updated'); }}
+        />
+      </Modal>
+
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable style={styles.menuScrim} onPress={() => setMenuOpen(false)} accessibilityLabel="Close menu">
           <View style={styles.menu}>
@@ -426,6 +409,14 @@ export default function DialerScreen() {
             >
               <Ionicons name="refresh" size={20} color={colors.text} />
               <Text style={styles.menuText}>Refresh leads</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+              onPress={() => { setMenuOpen(false); setKeyOpen(true); }}
+            >
+              <Ionicons name="key-outline" size={20} color={colors.text} />
+              <Text style={styles.menuText}>Update LeadSquared key</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -455,10 +446,10 @@ export default function DialerScreen() {
           </View>
 
           <Text style={styles.sectionTitle}>
-            {phase === 'reason' ? "Why didn't it connect?" : form ? form.name : 'How did the call go?'}
+            {phase === 'reason' ? "Why didn't it connect?" : form.name}
           </Text>
           <Text style={styles.sectionHint}>
-            {phase === 'reason' ? `Tap a reason to save the ${form.name}.` : form ? 'Fill in this call, then tap Save.' : 'Tap one to save it.'}
+            {phase === 'reason' ? `Tap a reason to save the ${form.name}.` : 'Fill in this call, then tap Save.'}
           </Text>
 
           {phase === 'reason' && (
@@ -485,25 +476,10 @@ export default function DialerScreen() {
             <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form instead</Text>
           )}
 
-          {phase === 'outcome' && form && (
+          {phase === 'outcome' && (
             <View style={styles.formBox}>
               <ActivityForm form={form} values={values} onChange={setValues} />
             </View>
-          )}
-
-          {phase === 'outcome' && !form && (
-            <ScrollView style={styles.outcomes}>
-              {OUTCOMES.map(([value, label], i) => (
-                <Pressable
-                  key={value}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [styles.outcome, i === OUTCOMES.length - 1 && styles.lastRow, pressed && styles.pressed]}
-                  onPress={() => chooseOutcome(value, label)}
-                >
-                  <Text style={styles.outcomeText}>{label}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
           )}
         </View>
       ) : phase === 'loading' ? (
@@ -655,9 +631,8 @@ export default function DialerScreen() {
             <Btn title="Call ended" kind="plain" onPress={() => finishCall(true)} style={styles.half} />
           </View>
         )}
-        {phase === 'outcome' && !form && <Btn title="Pause after this" kind="plain" onPress={pause} />}
         {phase === 'reason' && <Btn title="Pause after this" kind="plain" onPress={pause} />}
-        {phase === 'outcome' && form && (
+        {phase === 'outcome' && (
           <View style={styles.pair}>
             <Btn title="Pause after" kind="plain" onPress={pause} style={styles.half} />
             <Btn title={saving ? 'Saving…' : 'Save'} onPress={() => submit(values)} disabled={saving} style={styles.half} />

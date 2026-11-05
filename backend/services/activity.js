@@ -1,29 +1,29 @@
-const { lsqClient, lsqUrl } = require('../config/lsq');
+const { lsqClient, lsqUrl, lsqParams } = require('../config/lsq');
+const { keyHeaders } = require('./lsq_keys');
 
-// The LSQ activity each person marks after a call, and how the app lays out its form.
-// Sales (BDA Activity, 218) waits for an LSQ admin to make "Spoke with" optional; until then sales keeps the old outcomes.
+// The LSQ activity each mode marks after a call, and how the app lays out its form.
+const EVENT_BY_MODE = { hr: 263, sales: 218 };
 const FORMS = {
   263: { // HR Activity
-    groups: ['Team HR'],
-    // shortcut: people outside Team HR by email (the HR manager; Donald for testing); move to a table if more teams join.
-    emails: ['amulya.gowda@kalvium.com', 'donald.colin@kalvium.com'],
     // Shown first; the rest sits under "More fields". Picked from what HR filled in 59 real entries (2026-11-04).
     short: ['mx_Custom_1', 'mx_Custom_3', 'mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10', 'mx_Custom_23', 'mx_Custom_44', 'mx_Custom_50', 'ActivityEvent_Note', 'mx_Custom_4'],
     // Carried over from the last saved activity on the phone, so the reason screen needs one tap.
     sticky: ['mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10'],
     defaults: { mx_Custom_2: 'Screening Round', mx_Custom_9: 'Sales', mx_Custom_10: 'BDA / BDT' },
   },
+  218: { // BDA Activity. Sales stays closed (SALES_READY) until an LSQ admin makes "Spoke with" optional.
+    short: ['mx_Custom_1', 'Status', 'mx_Custom_4', 'mx_Custom_31', 'mx_Custom_3', 'ActivityEvent_Note', 'mx_Custom_26'],
+    sticky: ['mx_Custom_1'],
+    defaults: { mx_Custom_1: 'Qualification Call' },
+    alwaysBlank: ['mx_Custom_37'], // LSQ fills "JEE" into this one when it's left out
+  },
 };
 const NOTE = 'ActivityEvent_Note'; // a field in LSQ's metadata, but Create takes it as ActivityNote
 const HIDDEN = ['Owner']; // always the caller, set here
 const CACHE_MS = 60 * 60 * 1000;
 
-function activityEventFor(profile) {
-  const email = (profile.email || '').toLowerCase();
-  const hit = Object.entries(FORMS).find(([, f]) =>
-    f.emails.includes(email) || f.groups.some(g => (profile.groups || []).includes(g)));
-  return hit ? Number(hit[0]) : null;
-}
+// null until the person has finished setup.
+const activityEventFor = profile => EVENT_BY_MODE[profile.mode] || null;
 
 const parseJson = s => { try { return JSON.parse(s); } catch { return null; } };
 const values = opts => (opts || []).map(o => o.Value).filter(Boolean);
@@ -56,6 +56,7 @@ function toForm(type) {
     sticky: cfg.sticky,
     defaults: cfg.defaults,
     connected: connected && reason ? { schema: connected.schema, reason: reason.schema } : null,
+    alwaysBlank: cfg.alwaysBlank || [],
   };
 }
 
@@ -102,19 +103,26 @@ function toLsqFields(form, input) {
   }
   const missing = form.fields.find(f => f.required && f.schema !== NOTE && !fields.some(x => x.SchemaName === f.schema));
   if (missing) throw bad(`${missing.label} is required`);
+  for (const schema of form.alwaysBlank || []) fields.push({ SchemaName: schema, Value: '' });
   return { fields, note };
 }
 
-// Posts the activity on the lead as the caller. Returns LSQ's activity id.
-async function postActivity({ event, prospectId, ownerId, at, fields, note }) {
-  const { data } = await lsqClient.post(lsqUrl('ProspectActivity.svc/Create'), {
+// Posts the activity on the lead with the caller's own keys, so LSQ shows them as Created By. Returns LSQ's activity id.
+async function postActivity({ keys, event, prospectId, ownerId, at, fields, note }) {
+  const { data } = await lsqClient.post(`${lsqParams().host}/ProspectActivity.svc/Create`, {
     RelatedProspectId: prospectId,
     ActivityEvent: event,
     ActivityNote: note,
     ActivityDateTime: lsqTime(at),
     Fields: [...fields, { SchemaName: 'Owner', Value: ownerId }],
-  });
+  }, { headers: keyHeaders(keys) });
   return data.Message.Id;
 }
 
-module.exports = { FORMS, activityEventFor, getForm, toForm, toLsqFields, postActivity };
+// Who LSQ says created an activity; catches someone who pasted a colleague's keys.
+async function activityCreatorEmail(activityId) {
+  const { data } = await lsqClient.get(`${lsqUrl('ProspectActivity.svc/GetActivityDetails')}&activityId=${encodeURIComponent(activityId)}`);
+  return data.CreatedByEmail || null;
+}
+
+module.exports = { FORMS, activityEventFor, getForm, toForm, toLsqFields, postActivity, activityCreatorEmail };

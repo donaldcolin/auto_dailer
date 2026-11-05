@@ -2,11 +2,22 @@ const express = require('express');
 const supabase = require('../config/supabase');
 const { requireAuth } = require('../middleware/auth');
 const activity = require('../services/activity');
+const lsqKeys = require('../services/lsq_keys');
 
 const router = express.Router();
 
-// shortcut: placeholder outcomes for teams without an LSQ activity form yet (sales); 'connected' = marked through the form.
-const OUTCOMES = ['no_answer', 'connected', 'interested', 'not_interested', 'call_back', 'wrong_number', 'skipped'];
+const OUTCOMES = ['no_answer', 'connected', 'skipped'];
+
+const KEY_REJECTED = { code: 'lsq_key_rejected', error: 'LeadSquared refused your key, so this activity wasn\'t saved. Update your LeadSquared key and tap Save again.' };
+
+// The first post with new keys: if LSQ credits someone else, they pasted a colleague's keys. Never blocks the caller.
+function verifyCreator(profile, keys, activityId) {
+  if (keys.verified) return;
+  activity.activityCreatorEmail(activityId).then(email => {
+    if (email && email.toLowerCase() === (profile.email || '').toLowerCase()) return lsqKeys.markVerified(profile.id);
+    console.error(`[activity] keys of ${profile.email} post as ${email}`);
+  }).catch(err => console.error('[activity] creator check failed:', err.message));
+}
 
 // One row per dial. The call itself reaches LSQ through Callyzer; the caller's own marking goes in as their team's
 // LSQ activity (`activity` in the body), posted before the row so a failed post can be retried without losing it.
@@ -21,8 +32,8 @@ router.post('/', requireAuth, async (req, res) => {
   if (Number.isNaN(started.getTime())) return res.status(400).json({ error: 'startedAt must be a date' });
 
   const event = activity.activityEventFor(req.profile);
-  let activityId = null;
-  if (event && outcome !== 'skipped') {
+  if (!event) return res.status(409).json({ code: 'setup_required', error: 'Finish setup first.' });
+  if (outcome !== 'skipped') {
     if (!values || typeof values !== 'object') return res.status(400).json({ error: 'activity is required' });
     let lsq;
     try {
@@ -31,10 +42,15 @@ router.post('/', requireAuth, async (req, res) => {
       if (e.status === 400) return res.status(400).json({ error: e.message });
       throw e;
     }
+    // No fallback to the org key: that would credit this person's call to someone else.
+    const keys = await lsqKeys.getKeys(req.profile.id);
+    if (!keys) return res.status(422).json(KEY_REJECTED);
     try {
-      activityId = await activity.postActivity({ event, prospectId, ownerId: req.profile.lsq_user_id, at: started, ...lsq });
+      const activityId = await activity.postActivity({ keys, event, prospectId, ownerId: req.profile.lsq_user_id, at: started, ...lsq });
+      verifyCreator(req.profile, keys, activityId);
     } catch (e) {
       console.error('[activity]', e.response?.status, JSON.stringify(e.response?.data) || e.message);
+      if (e.response?.status === 401) return res.status(422).json(KEY_REJECTED);
       return res.status(502).json({ error: `LeadSquared didn't save the activity: ${e.response?.data?.ExceptionMessage || e.message}` });
     }
   }
@@ -50,7 +66,7 @@ router.post('/', requireAuth, async (req, res) => {
     note: note || null,
   });
   if (error) throw error;
-  res.status(201).json({ ok: true, activityId });
+  res.status(201).json({ ok: true });
 });
 
 module.exports = router;
