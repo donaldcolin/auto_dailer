@@ -14,14 +14,14 @@ export const colors = {
 export const logo = require('./assets/logo.png');
 export const wordmark = require('./assets/wordmark.png'); // the full red Kalvium logo
 
-// primary: black fill for the one main action. plain: text only, for everything else.
+// primary: black fill for the one main action. plain: outlined, for everything else.
 export function Btn({ title, onPress, kind = 'primary', disabled, style }) {
   return (
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
       disabled={disabled}
-      style={({ pressed }) => [styles.btn, kind === 'primary' && styles.primary, (disabled || pressed) && styles.dim, style]}
+      style={({ pressed }) => [styles.btn, kind === 'primary' ? styles.primary : styles.plain, (disabled || pressed) && styles.dim, style]}
     >
       <Text style={[styles.text, kind === 'primary' && styles.primaryText]}>{title}</Text>
     </Pressable>
@@ -53,8 +53,9 @@ export const card = { borderWidth: StyleSheet.hairlineWidth, borderColor: '#DADA
 const styles = StyleSheet.create({
   toast: { position: 'absolute', left: 24, right: 24, bottom: 112, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.text, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 16, elevation: 4 },
   toastText: { flex: 1, color: colors.bg, fontSize: 15, fontWeight: '500' },
-  btn: { minHeight: 56, borderRadius: 28, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center' },
+  btn: { minHeight: 56, borderRadius: 28, paddingHorizontal: 20, alignItems: 'center', justifyContent: 'center' },
   primary: { backgroundColor: colors.text },
+  plain: { borderWidth: 1.5, borderColor: colors.line },
   text: { fontSize: 17, fontWeight: '500', color: colors.text },
   primaryText: { color: colors.bg },
   dim: { opacity: 0.4 },

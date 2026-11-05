@@ -21,15 +21,16 @@ const showDate = (iso) => {
   return `${d.toDateString().slice(4, 10)}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-/** The LSQ activity form, built from /api/activity-form. Common fields first, the rest under "More fields". */
+/** The LSQ activity form, built from /api/activity-form. The team's sections first, the rest under "More fields". */
 export default function ActivityForm({ form, values, onChange }) {
   const [more, setMore] = useState(false);
   const [picking, setPicking] = useState(null); // the dropdown field being chosen
   const set = (schema, v) => onChange(setValue(form, values, schema, v));
   // A dependent dropdown with nothing to offer (e.g. the failure reason on a connected call) is hidden.
   const visible = (f) => !f.dependent || optionsFor(f, values).length > 0;
-  const short = form.short.map((s) => form.fields.find((f) => f.schema === s)).filter((f) => f && visible(f));
-  const rest = form.fields.filter((f) => !form.short.includes(f.schema) && visible(f));
+  const sections = form.sections.map(([title, schemas]) => [title, schemas.map((s) => form.fields.find((f) => f.schema === s)).filter((f) => f && visible(f))]);
+  const placed = form.sections.flatMap(([, schemas]) => schemas);
+  const rest = form.fields.filter((f) => !placed.includes(f.schema) && visible(f));
 
   function pickDate(f) {
     const value = values[f.schema] ? new Date(values[f.schema]) : new Date();
@@ -82,7 +83,12 @@ export default function ActivityForm({ form, values, onChange }) {
   return (
     <>
       <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-        <View style={card}>{short.map(field)}</View>
+        {sections.map(([title, list]) => (
+          <View key={title || 'form'} style={styles.section}>
+            {!!title && <Text style={styles.sectionTitle}>{title}</Text>}
+            <View style={card}>{list.map(field)}</View>
+          </View>
+        ))}
         <Pressable accessibilityRole="button" onPress={() => setMore(!more)} style={styles.more}>
           <Text style={styles.moreText}>{more ? 'Fewer fields' : `More fields (${rest.length})`}</Text>
         </Pressable>
@@ -116,7 +122,9 @@ export default function ActivityForm({ form, values, onChange }) {
 }
 
 const styles = StyleSheet.create({
-  form: { paddingBottom: 24 },
+  form: { paddingBottom: 24, gap: 20 },
+  section: { gap: 8 },
+  sectionTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
   row: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   lastRow: { borderBottomWidth: 0 },
   pressed: { backgroundColor: '#F5F5F5' },
@@ -124,7 +132,7 @@ const styles = StyleSheet.create({
   value: { fontSize: 17, color: colors.text },
   empty: { color: colors.muted },
   input: { fontSize: 17, color: colors.text, padding: 0 },
-  more: { paddingVertical: 16 },
+  more: { paddingBottom: 8 },
   moreText: { fontSize: 15, color: colors.text, textDecorationLine: 'underline' },
   scrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' },
   sheet: { maxHeight: '60%', backgroundColor: colors.bg, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 24, paddingTop: 20, paddingBottom: 24 },

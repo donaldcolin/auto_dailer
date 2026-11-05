@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
 import SetupScreen from './SetupScreen';
 import Dialer from './modules/dialer';
-import { api } from './lib/api';
+import { api, OFFLINE } from './lib/api';
 import { supabase } from './lib/supabase';
 import { Btn, card, colors, Skeleton, Toast, wordmark } from './ui';
 
@@ -62,7 +62,6 @@ function LeadHistory({ history, compact }) {
               {[h.detail, h.note && `"${h.note}"`].filter(Boolean).join('. ')}
             </Text>
           )}
-          {!compact && !!h.by && <Text style={styles.historyBy}>{h.by}</Text>}
         </View>
       ))}
     </View>
@@ -89,8 +88,11 @@ export default function DialerScreen({ me }) {
   const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, leads }
   const [tab, setTab] = useState(null); // 'pushed' | 'mine'; null = pushed when there are any
   const [countdown, setCountdown] = useState(COUNTDOWN_SEC);
-  // The lead whose countdown is frozen so the caller can read it; tied to the lead so the next one never inherits it.
-  const [heldId, setHeldId] = useState(null);
+  // Finger on the lead screen: the countdown waits, and carries on when it lifts.
+  const [held, setHeld] = useState(false);
+  const draggingRef = useRef(false);
+  const countdownBar = useRef(new Animated.Value(1)).current;
+  const [leadOpen, setLeadOpen] = useState(false); // marking: the form gets the room unless the caller opens the lead
   const [talkSeconds, setTalkSeconds] = useState(0);
   const [toast, setToast] = useState(null); // "HR Activity saved for Akhila", shown for a moment after each save
   const toastTimer = useRef(null);
@@ -146,15 +148,20 @@ export default function DialerScreen({ me }) {
     };
   }, []);
 
-  const held = !!lead && heldId === lead.prospectId;
-  const hold = () => { if (phaseRef.current === 'countdown' && lead) setHeldId(lead.prospectId); };
+  // A scroll takes over the touch and sends touchCancel with the finger still down, so a drag releases on its own end.
+  const dragStart = () => { draggingRef.current = true; setHeld(true); };
+  const dragEnd = () => { draggingRef.current = false; setHeld(false); };
+  const touchCancel = () => { if (!draggingRef.current) setHeld(false); };
 
   // Countdown before each dial; Skip / Pause / Stop leave the 'countdown' phase and so cancel it.
   useEffect(() => {
     if (phase !== 'countdown' || held) return;
     if (countdown === 0) { dial(); return; }
     const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
-    return () => clearTimeout(t);
+    // The timer decides when to dial; the bar only glides along with it, and frozen frames can't delay a call.
+    const glide = Animated.timing(countdownBar, { toValue: (countdown - 1) / COUNTDOWN_SEC, duration: 1000, easing: Easing.linear, useNativeDriver: true });
+    glide.start();
+    return () => { clearTimeout(t); glide.stop(); };
   }, [phase, countdown, held]);
 
   // Load the current lead's activity, and the next lead's in the background, so it's ready when that lead comes up.
@@ -215,6 +222,7 @@ export default function DialerScreen({ me }) {
     setRefreshing(true);
     try {
       const left = await loadQueue(true);
+      setError(null);
       if (left.length && phaseRef.current === 'done') setPhase('idle');
       showToast(`Leads refreshed: ${left.length} to call`);
     } catch (e) {
@@ -237,6 +245,7 @@ export default function DialerScreen({ me }) {
   // Reload the list only; dialing always waits for Start.
   async function refresh() {
     const left = await loadQueue();
+    setError((e) => (e?.includes(OFFLINE) ? null : e)); // back online
     if (left.length && phaseRef.current === 'done') setPhase('idle');
   }
 
@@ -259,6 +268,9 @@ export default function DialerScreen({ me }) {
     if (!left.length) { setLead(null); setPhase('done'); return; }
     setLead({ ...left[0], ruleId: queueRef.current.rule?.id || null });
     setCountdown(COUNTDOWN_SEC);
+    setHeld(false);
+    setLeadOpen(false);
+    countdownBar.setValue(1);
     setPhase('countdown');
   }
 
@@ -364,7 +376,7 @@ export default function DialerScreen({ me }) {
   const shownTab = tab || (pushedLeads.length ? 'pushed' : 'mine');
   const tabLeads = shownTab === 'pushed' ? pushedLeads : myLeads;
   const status = {
-    countdown: held ? 'On hold. Tap Call now when you\'re ready.' : `Calling in ${countdown}`,
+    countdown: held ? 'Paused' : `Calling in ${countdown}`,
     calling: 'On call',
     outcome: talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
     reason: 'Not answered',
@@ -436,14 +448,28 @@ export default function DialerScreen({ me }) {
 
       {active && marking ? (
         <View style={styles.mark}>
-          <View style={styles.leadCard}>
-            <Text style={styles.cardStatus}>{status}</Text>
-            <Text style={styles.cardName} numberOfLines={1}>{lead.name || 'No name'}</Text>
-            <Text style={styles.cardMeta}>{pretty(lead.phone)}</Text>
-            {!!lead.stage && <Text style={styles.cardMeta}>{lead.stage}{lead.pushed ? ', pushed by your TL' : ''}</Text>}
-            <LeadDetails details={lead.details} compact />
-            <LeadHistory history={histories[lead.prospectId] || {}} compact />
-          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: leadOpen }}
+            accessibilityHint="Shows the lead's details"
+            style={styles.leadCard}
+            onPress={() => setLeadOpen((o) => !o)}
+          >
+            <View style={styles.leadHead}>
+              <View style={styles.teamBody}>
+                <Text style={styles.cardName} numberOfLines={1}>{lead.name || 'No name'}</Text>
+                <Text style={styles.cardMeta} numberOfLines={1}>{status}, {pretty(lead.phone)}</Text>
+              </View>
+              <Ionicons name={leadOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.muted} />
+            </View>
+            {leadOpen && (
+              <>
+                {!!lead.stage && <Text style={[styles.cardMeta, { marginTop: 8 }]}>{lead.stage}{lead.pushed ? ', pushed by your TL' : ''}</Text>}
+                <LeadDetails details={lead.details} compact />
+                <LeadHistory history={histories[lead.prospectId] || {}} compact />
+              </>
+            )}
+          </Pressable>
 
           <Text style={styles.sectionTitle}>
             {phase === 'reason' ? "Why didn't it connect?" : form.name}
@@ -490,22 +516,34 @@ export default function DialerScreen({ me }) {
           <Skeleton style={{ width: 110, height: 18 }} />
         </View>
       ) : active ? (
-        <ScrollView
-          key={lead.prospectId} // a fresh screen per lead: starts at the top, no scroll carried over
-          contentContainerStyle={styles.call}
-          onScrollBeginDrag={hold} // reading: don't call yet
-        >
-          <View style={styles.statusRow}>
+        <View style={styles.formBox} onTouchStart={() => setHeld(true)} onTouchEnd={() => setHeld(false)} onTouchCancel={touchCancel}>
+          {/* Stays pinned while the lead scrolls: when the call happens is what matters most here. */}
+          {phase === 'countdown' && (
+            <View style={styles.barTrack}>
+              <Animated.View style={[styles.barFill, { transform: [{ scaleX: countdownBar }] }]} />
+            </View>
+          )}
+          <View style={styles.banner} accessibilityLiveRegion="polite">
             {phase === 'calling' && <View style={styles.liveDot} />}
-            <Text style={styles.status}>{status}</Text>
+            <Text style={styles.bannerText}>{status}</Text>
+            {phase === 'countdown' && <Text style={styles.bannerHint}>{held ? 'Lift to continue' : 'Hold the screen to pause'}</Text>}
           </View>
-          <Text style={styles.callName}>{lead.name || 'No name'}</Text>
-          <Text style={styles.callMeta}>{pretty(lead.phone)}</Text>
-          <Text style={styles.callMeta}>{lead.stage}</Text>
-          {lead.pushed && <Text style={styles.callMeta}>Pushed by your TL</Text>}
-          <LeadDetails details={lead.details} />
-          <LeadHistory history={histories[lead.prospectId] || {}} />
-        </ScrollView>
+          <ScrollView
+            key={lead.prospectId} // a fresh screen per lead: starts at the top, no scroll carried over
+            contentContainerStyle={styles.call}
+            onScrollBeginDrag={dragStart}
+            onScrollEndDrag={dragEnd}
+          >
+            <Text style={styles.callName}>{lead.name || 'No name'}</Text>
+            <Text style={styles.callPhone}>{pretty(lead.phone)}</Text>
+            <View style={styles.tags}>
+              {!!lead.stage && <Text style={styles.tag}>{lead.stage}</Text>}
+              {lead.pushed && <Text style={[styles.tag, styles.tagOn]}>Pushed by your TL</Text>}
+            </View>
+            <LeadDetails details={lead.details} />
+            <LeadHistory history={histories[lead.prospectId] || {}} />
+          </ScrollView>
+        </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
           {queueInfo ? (
@@ -610,20 +648,11 @@ export default function DialerScreen({ me }) {
             <Btn title="Resume" onPress={start} style={styles.half} />
           </View>
         )}
-        {phase === 'countdown' && !held && (
+        {phase === 'countdown' && (
           <View style={styles.pair}>
-            <Btn title="Hold" kind="plain" onPress={hold} style={styles.half} />
+            <Btn title="Back to list" kind="plain" onPress={pause} style={styles.half} />
             <Btn title="Skip" kind="plain" onPress={skip} style={styles.half} />
           </View>
-        )}
-        {phase === 'countdown' && held && (
-          <>
-            <View style={styles.pair}>
-              <Btn title="Call now" onPress={() => { setHeldId(null); dial(); }} style={styles.half} />
-              <Btn title="Skip" kind="plain" onPress={skip} style={styles.half} />
-            </View>
-            <Text style={styles.backLink} onPress={pause}>Back to list</Text>
-          </>
         )}
         {phase === 'calling' && (
           <View style={styles.pair}>
@@ -682,36 +711,42 @@ const styles = StyleSheet.create({
   listTitle: { fontSize: 13, color: colors.muted, marginTop: 24, marginBottom: 2 },
   more: { fontSize: 15, color: colors.muted, paddingVertical: 16 },
 
-  call: { flexGrow: 1, paddingHorizontal: 24, paddingVertical: 24, justifyContent: 'center' },
-  history: { marginTop: 24, gap: 4 },
-  historyTitle: { fontSize: 13, color: colors.muted, marginBottom: 4 },
+  call: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 20, paddingBottom: 24 },
+  barTrack: { height: 2, backgroundColor: colors.line },
+  barFill: { height: 2, backgroundColor: colors.text, transformOrigin: 'left' },
+  banner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingTop: 14 },
+  bannerText: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text, fontVariant: ['tabular-nums'] },
+  bannerHint: { fontSize: 13, color: colors.muted },
+  callPhone: { fontSize: 18, color: colors.text, fontVariant: ['tabular-nums'] },
+  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  tag: { fontSize: 13, color: colors.text, backgroundColor: '#F2F2F2', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, overflow: 'hidden' },
+  tagOn: { color: colors.bg, backgroundColor: colors.text },
+  history: { marginTop: 28, gap: 4 },
+  historyTitle: { fontSize: 15, fontWeight: '600', color: colors.text, marginBottom: 4 },
   historyRow: { paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   historyHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   historyWhat: { flex: 1, fontSize: 15, fontWeight: '500', color: colors.text },
   historyAt: { fontSize: 13, color: colors.muted },
   historySub: { fontSize: 14, color: colors.muted, marginTop: 2 },
-  historyBy: { fontSize: 13, color: colors.muted, marginTop: 1 },
   mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
-  leadCard: { ...card, backgroundColor: '#F7F7F7', padding: 16, marginBottom: 24 },
-  cardStatus: { fontSize: 13, color: colors.muted, marginBottom: 4 },
-  cardName: { fontSize: 22, fontWeight: '600', color: colors.text, marginBottom: 2 },
-  cardMeta: { fontSize: 15, color: colors.muted, lineHeight: 22 },
+  leadCard: { ...card, backgroundColor: '#F7F7F7', paddingHorizontal: 16, paddingVertical: 12, marginBottom: 20 },
+  leadHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  teamBody: { flex: 1, minWidth: 0 },
+  cardName: { fontSize: 17, fontWeight: '600', color: colors.text },
+  cardMeta: { fontSize: 14, color: colors.muted, lineHeight: 20, marginTop: 1 },
   sectionTitle: { fontSize: 20, fontWeight: '600', color: colors.text },
   sectionHint: { fontSize: 15, color: colors.muted, marginTop: 2, marginBottom: 12 },
   formBox: { flex: 1 },
   fullForm: { fontSize: 15, color: colors.text, textDecorationLine: 'underline', paddingVertical: 16 },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
-  status: { fontSize: 15, color: colors.muted },
-  callName: { fontSize: 34, fontWeight: '600', color: colors.text, marginBottom: 8 },
-  callMeta: { fontSize: 17, color: colors.muted, lineHeight: 26 },
+  callName: { fontSize: 30, fontWeight: '600', color: colors.text, marginBottom: 4 },
   outcomes: { flexGrow: 0, ...card },
   outcome: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   lastRow: { borderBottomWidth: 0 },
   outcomeText: { fontSize: 18, color: colors.text },
   pressed: { backgroundColor: '#F5F5F5' },
 
-  details: { ...card, marginTop: 24, paddingHorizontal: 16, paddingVertical: 8 },
+  details: { ...card, marginTop: 20, paddingHorizontal: 16, paddingVertical: 8 },
   detailsCompact: { marginTop: 10, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#DADADA' },
   detailRow: { flexDirection: 'row', gap: 12, paddingVertical: 4 },
   detailLabel: { width: 84, fontSize: 15, color: colors.muted },
@@ -720,6 +755,5 @@ const styles = StyleSheet.create({
   footnote: { paddingHorizontal: 24, paddingBottom: 8, fontSize: 14, color: colors.muted },
   footer: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 32 },
   pair: { flexDirection: 'row', gap: 12 },
-  backLink: { textAlign: 'center', fontSize: 15, color: colors.muted, paddingTop: 12 },
   half: { flex: 1 },
 });
