@@ -1,7 +1,7 @@
 const mockPost = jest.fn();
 jest.mock('../config/lsq', () => ({ lsqClient: { post: (...a) => mockPost(...a), get: jest.fn() }, lsqUrl: p => p, lsqParams: () => ({ host: 'https://lsq' }) }));
 jest.mock('../config/supabase', () => ({}));
-const { activityEventFor, toForm, toLsqFields, postActivity } = require('../services/activity');
+const { FORMS, activityEventFor, toForm, toLsqFields, postActivity } = require('../services/activity');
 
 // A cut-down HR Activity (263) as ActivityTypes.Get returns it: option sets are JSON strings.
 const opts = vs => JSON.stringify(vs.map(Value => ({ Value })));
@@ -73,4 +73,12 @@ test('post: with the caller\'s own keys, on the lead, owned by the caller, at th
     RelatedProspectId: 'p1', ActivityEvent: 263, ActivityNote: '', ActivityDateTime: '2026-11-04 09:00:00',
     Fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }, { SchemaName: 'Owner', Value: 'L1' }],
   });
+});
+
+test('HR form follows LSQ order and sections, each field once', () => {
+  const [first, second] = FORMS[263].sections;
+  expect(first[0]).toBe('Lead Qualification');
+  expect(first[1].slice(0, 4)).toEqual(['mx_Custom_9', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1']);
+  expect(second[0]).toBe('Screening Check Points');
+  expect(new Set([...first[1], ...second[1]]).size).toBe(first[1].length + second[1].length);
 });

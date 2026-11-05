@@ -3,7 +3,7 @@ jest.mock('../config/lsq', () => ({ lsqClient: { post: (...a) => mockPost(...a),
 jest.mock('../services/activity', () => ({
   FORMS: { 263: {} },
   getForm: async () => ({
-    short: ['mx_Custom_1', 'mx_Custom_3', 'mx_Custom_2', 'mx_Custom_9', 'mx_Custom_44', 'ActivityEvent_Note', 'mx_Custom_4'],
+    sections: [['Lead Qualification', ['mx_Custom_1', 'mx_Custom_3', 'mx_Custom_2', 'mx_Custom_9', 'mx_Custom_44', 'ActivityEvent_Note', 'mx_Custom_4']]],
     sticky: ['mx_Custom_2', 'mx_Custom_9'],
     connected: { schema: 'mx_Custom_1', reason: 'mx_Custom_3' },
     fields: [
@@ -26,7 +26,7 @@ test('history: newest first, HR Activity values in words, calls renamed, SMS/for
   const h = await leadHistory('lead1');
   expect(mockPost.mock.calls[0][0]).toContain('leadId=lead1');
   expect(h.map(x => x.what)).toEqual(['HR Activity', 'Outgoing call']);
-  expect(h[0]).toMatchObject({ by: 'Harshitha Rakesh', note: 'call after 5', at: expect.stringMatching(/29 Oct.*1:44/) });
+  expect(h[0]).toMatchObject({ note: 'call after 5', at: expect.stringMatching(/29 Oct.*1:44/) });
   expect(h[0].detail).toMatch(/^Connected, Screening Status: JD Sent, Follow Up date: 5 Nov.*10:30/i); // sticky Activity Type left out
   expect(h[1]).toMatchObject({ detail: 'InComplete' });
 });

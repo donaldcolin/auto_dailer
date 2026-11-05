@@ -116,7 +116,6 @@ test('details: filled fields only, in plain words, LSQ UTC shown as IST', () => 
     mx_Last_Spoken_On: '2026-10-31 10:52:56.000', LeadAge: '5',
   })).toEqual([
     { label: 'Source', value: 'Naukri, ARMT Hindi Kalvium Job Posting' },
-    { label: 'Campaign', value: 'Exp 0-1 year' },
     { label: 'Location', value: 'Delhi' },
     { label: 'Calls', value: '3 made, 1 connected' },
     { label: 'Last spoke', value: expect.stringMatching(/31 Oct.*4:22/i) },

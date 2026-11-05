@@ -9,7 +9,7 @@ const HIDDEN = new Set([203, 97, 283]);
 // One line about a team-form activity (HR Activity…) from the values LSQ lists with it, labelled by the form.
 function formSummary(fields, form) {
   const parts = [];
-  for (const schema of form.short) {
+  for (const schema of form.sections[0][1]) {
     const v = fields[schema];
     if (!v || form.sticky.includes(schema) || schema === 'ActivityEvent_Note') continue;
     if (schema === form.connected?.schema) { parts.push(v === 'No' ? 'Not connected' : v === 'Yes' ? 'Connected' : v); continue; }
@@ -22,7 +22,7 @@ function formSummary(fields, form) {
 
 /**
  * A lead's latest LSQ activities, newest first, as plain lines for the call screen:
- * { at, what, by, detail, note }. One LSQ call; team-form values come labelled from the form's metadata.
+ * { at, what, detail, note }. One LSQ call; team-form values come labelled from the form's metadata.
  */
 async function leadHistory(leadId, limit = 6) {
   // Read extra rows so hidden kinds don't leave the list short.
@@ -44,7 +44,6 @@ async function leadHistory(leadId, limit = 6) {
     return {
       at: istTime(a.CreatedOn),
       what: a.EventCode === 22 ? 'Outgoing call' : a.EventCode === 21 ? 'Incoming call' : a.EventName,
-      by: d.CreatedByName || '',
       detail,
       note: forms[a.EventCode] ? (fields.ActivityEvent_Note || '') : '',
     };

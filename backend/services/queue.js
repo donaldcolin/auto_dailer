@@ -8,7 +8,7 @@ const LIST_CACHE_MS = 5 * 60 * 1000;
 const PUSH_CACHE_MS = 60 * 1000; // a TL's push reaches the queue within a minute
 const PAGE_SIZE = 200;
 // Shown on the call screen when filled (picked from HR leads, 2026-11-04; LSQ lead fields are org-wide).
-const DETAIL_COLUMNS = 'Source,SourceMedium,SourceCampaign,mx_District,mx_State,mx_Total_Calls,mx_Total_Connects,mx_Last_Spoken_On,LeadAge';
+const DETAIL_COLUMNS = 'Source,SourceMedium,mx_District,mx_State,mx_Total_Calls,mx_Total_Connects,mx_Last_Spoken_On,LeadAge';
 const COLUMNS = `ProspectID,FirstName,LastName,Phone,Mobile,ProspectStage,OwnerId,${DETAIL_COLUMNS}`;
 // Converted or ruled-out leads: never in the default queue. A TL rule can still target them on purpose.
 const SKIP_BY_DEFAULT = new Set(['Signup Done', 'Payment Done', 'Customer', 'Disqualified']);
@@ -40,7 +40,6 @@ function details(p) {
     if (value) out.push({ label, value });
   };
   add('Source', p.Source, p.SourceMedium);
-  add('Campaign', p.SourceCampaign);
   add('Location', p.mx_District, p.mx_State);
   if (Number(p.mx_Total_Calls)) add('Calls', `${p.mx_Total_Calls} made, ${p.mx_Total_Connects || 0} connected`);
   if (p.mx_Last_Spoken_On) add('Last spoke', istTime(p.mx_Last_Spoken_On));

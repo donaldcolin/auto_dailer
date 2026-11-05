@@ -5,14 +5,17 @@ const { keyHeaders } = require('./lsq_keys');
 const EVENT_BY_MODE = { hr: 263, sales: 218 };
 const FORMS = {
   263: { // HR Activity
-    // Shown first; the rest sits under "More fields". Picked from what HR filled in 59 real entries (2026-11-04).
-    short: ['mx_Custom_1', 'mx_Custom_3', 'mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10', 'mx_Custom_23', 'mx_Custom_44', 'mx_Custom_50', 'ActivityEvent_Note', 'mx_Custom_4'],
+    // Same order and sections as HR's form in LSQ, so it feels familiar; the rest sits under "More fields".
+    sections: [
+      ['Lead Qualification', ['mx_Custom_9', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1', 'mx_Custom_3', 'mx_Custom_23', 'ActivityEvent_Note', 'mx_Custom_44', 'mx_Custom_4']],
+      ['Screening Check Points', ['mx_Custom_20', 'mx_Custom_14', 'mx_Custom_15', 'mx_Custom_16', 'mx_Custom_17', 'mx_Custom_18', 'mx_Custom_22', 'mx_Custom_43', 'mx_Custom_5', 'mx_Custom_50', 'mx_Custom_49']],
+    ],
     // Carried over from the last saved activity on the phone, so the reason screen needs one tap.
     sticky: ['mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10'],
     defaults: { mx_Custom_2: 'Screening Round', mx_Custom_9: 'Sales', mx_Custom_10: 'BDA / BDT' },
   },
   218: { // BDA Activity. Sales stays closed (SALES_READY) until an LSQ admin makes "Spoke with" optional.
-    short: ['mx_Custom_1', 'Status', 'mx_Custom_4', 'mx_Custom_31', 'mx_Custom_3', 'ActivityEvent_Note', 'mx_Custom_26'],
+    sections: [[null, ['mx_Custom_1', 'Status', 'mx_Custom_4', 'mx_Custom_31', 'mx_Custom_3', 'ActivityEvent_Note', 'mx_Custom_26']]],
     sticky: ['mx_Custom_1'],
     defaults: { mx_Custom_1: 'Qualification Call' },
     alwaysBlank: ['mx_Custom_37'], // LSQ fills "JEE" into this one when it's left out
@@ -30,7 +33,7 @@ const values = opts => (opts || []).map(o => o.Value).filter(Boolean);
 
 // LSQ field metadata → the shape the app renders. Dependent dropdowns get { parentValue: [options] }.
 function toForm(type) {
-  const cfg = FORMS[type.ActivityEvent] || { short: [], sticky: [], defaults: {} };
+  const cfg = FORMS[type.ActivityEvent] || { sections: [], sticky: [], defaults: {} };
   const fields = type.Fields
     .filter(f => f.ShowInForm && !HIDDEN.includes(f.SchemaName))
     .sort((a, b) => a.Sequence - b.Sequence)
@@ -52,7 +55,7 @@ function toForm(type) {
     event: type.ActivityEvent,
     name: type.DisplayName,
     fields,
-    short: cfg.short,
+    sections: cfg.sections,
     sticky: cfg.sticky,
     defaults: cfg.defaults,
     connected: connected && reason ? { schema: connected.schema, reason: reason.schema } : null,
