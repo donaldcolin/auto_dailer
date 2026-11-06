@@ -20,6 +20,7 @@ SIM-based progressive auto-dialer for associates (counsellors), plus a rules das
 - TL filters = LSQ **Dynamic Lists** named `Dialer – …` (LSQ "My Filters" have no API). Rule = target (associate or sales group) + List + start time + days.
 - Access by role: managers see all teams, TLs see their own sales group. Roles and groups come from LSQ `Users.Get` (`Role`, `MemberOfGroups`).
 - TLs push leads to the dialer by adding LSQ custom activity **283 "Auto Dialer"** to them (manager's choice, 2026-11-03). Pushed leads go first in the owner's queue (`backend/services/pushed.js`). The in-tab filter builder is parked.
+- Only LSQ admins can delete activities, so a TL undoes a push by adding Auto Dialer again, usually in bulk, with `mx_Custom_2` ("Remove Auto Dailer") = Yes. The latest activity on the lead decides; a remove wins a same-minute tie (decided 2026-11-06).
 - No reports or stats in this app.
 - After each call the caller marks their team's LSQ activity in the app; the dialer posts it (`backend/services/activity.js`) with **that person's own LSQ keys**, so LSQ shows them as Created By (HR's reports count by it, decided 2026-11-05). Never fall back to the org key for this.
 - **Personal keys**: each person pastes theirs once at setup. Encrypted in `user_lsq_keys` (AES-256-GCM, `LSQ_KEYS_SECRET` on Railway; losing it means everyone re-enters). Never in the APK, never logged or returned. The org key does all reads.

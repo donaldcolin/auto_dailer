@@ -16,13 +16,14 @@ HR goes first (about 150 dials a day per person). Sales follows on the same app.
 | --- | --- | --- |
 | HR caller | Android app | Calls their own leads and marks each call |
 | Sales caller (later) | Android app | Same, with the BDA form |
-| TL | LeadSquared | Adds the Auto Dialer activity to push leads; tells the team to tap Refresh leads |
+| TL | LeadSquared | Adds the Auto Dialer activity to push leads, or with Remove = Yes to undo a push; tells the team to tap Refresh leads |
 | Operations | LeadSquared | Assigns leads; the dialer never assigns or moves them |
 
 ## Requirements
 
 **Queue**
 1. Pushed leads (activity 283) come first, oldest push first, even if their stage is closed. A push leaves the queue once the lead is dialed after it. Pushes older than 7 days are ignored.
+   To undo a push, a TL adds Auto Dialer again (in bulk if needed) with Remove Auto Dialer = Yes, because TLs can't delete activities. The latest Auto Dialer activity on a lead decides. An open lead the person owns stays in their own leads below.
 2. Then the person's own leads, newest 300, skipping Signup Done, Payment Done, Customer and Disqualified.
 3. HR team members also skip leads that have ever connected.
 
