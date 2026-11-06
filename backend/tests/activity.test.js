@@ -82,3 +82,16 @@ test('HR form follows LSQ order and sections, each field once', () => {
   expect(second[0]).toBe('Screening Check Points');
   expect(new Set([...first[1], ...second[1]]).size).toBe(first[1].length + second[1].length);
 });
+
+test('unanswered calls get the placeholder for a mandatory field; connected calls and a real choice do not', () => {
+  const strict = {
+    ...form,
+    connected: { schema: 'mx_Custom_1', reason: 'mx_Custom_3' },
+    notConnected: { spoke: 'Student' },
+    fields: [...form.fields, { schema: 'spoke', label: 'Spoke with', type: 'dropdown', required: true, options: ['Student', 'Father'] }],
+  };
+  const spoke = out => out.fields.find(f => f.SchemaName === 'spoke')?.Value;
+  expect(spoke(toLsqFields(strict, { mx_Custom_1: 'No' }))).toBe('Student');
+  expect(spoke(toLsqFields(strict, { mx_Custom_1: 'No', spoke: 'Father' }))).toBe('Father');
+  expect(() => toLsqFields(strict, { mx_Custom_1: 'Yes' })).toThrow('Spoke with is required');
+});

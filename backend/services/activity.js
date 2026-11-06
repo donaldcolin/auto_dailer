@@ -19,6 +19,9 @@ const FORMS = {
     sticky: ['mx_Custom_1'],
     defaults: { mx_Custom_1: 'Qualification Call' },
     alwaysBlank: ['mx_Custom_37'], // LSQ fills "JEE" into this one when it's left out
+    // shortcut: "Spoke with" is mandatory in LSQ even when nobody answered, and it has no NA option, so unanswered calls
+    // record a placeholder that skews any report on it; remove once an LSQ admin makes the field optional.
+    notConnected: { mx_Custom_31: 'Student' },
   },
 };
 const NOTE = 'ActivityEvent_Note'; // a field in LSQ's metadata, but Create takes it as ActivityNote
@@ -60,6 +63,7 @@ function toForm(type) {
     defaults: cfg.defaults,
     connected: connected && reason ? { schema: connected.schema, reason: reason.schema } : null,
     alwaysBlank: cfg.alwaysBlank || [],
+    notConnected: cfg.notConnected || {},
   };
 }
 
@@ -80,8 +84,10 @@ const lsqTime = d => d.toISOString().replace('T', ' ').slice(0, 19); // "YYYY-MM
  * Checks the app's values against the form and returns LSQ's Create fields.
  * Throws an Error with `status = 400` for anything LSQ would reject or silently store wrong.
  */
-function toLsqFields(form, input) {
+function toLsqFields(form, rawInput) {
   const bad = msg => Object.assign(new Error(msg), { status: 400 });
+  const unanswered = form.connected && rawInput?.[form.connected.schema] === 'No';
+  const input = unanswered ? { ...form.notConnected, ...rawInput } : rawInput;
   const byName = new Map(form.fields.map(f => [f.schema, f]));
   let note = '';
   const fields = [];
