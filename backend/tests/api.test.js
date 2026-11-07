@@ -109,7 +109,7 @@ describe('/api/disposition posts the activity with the caller\'s own keys', () =
     expect(ok.status).toBe(201);
     expect(JSON.stringify(ok.body)).not.toMatch(/ak|sk/);
     expect(lsq).toHaveBeenLastCalledWith(expect.objectContaining({
-      keys: expect.objectContaining({ accessKey: 'ak', secretKey: 'sk' }), event: 263, prospectId: 'p2', ownerId: 'L1', fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }],
+      keys: expect.objectContaining({ accessKey: 'ak', secretKey: 'sk' }), event: 284, prospectId: 'p2', ownerId: 'L1', fields: [{ SchemaName: 'mx_Custom_1', Value: 'No' }],
     }));
     expect(inserted).toHaveLength(1);
   });

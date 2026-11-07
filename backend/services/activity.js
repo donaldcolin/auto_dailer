@@ -2,17 +2,25 @@ const { lsqClient, lsqUrl, lsqParams } = require('../config/lsq');
 const { keyHeaders } = require('./lsq_keys');
 
 // The LSQ activity each mode marks after a call, and how the app lays out its form.
-const EVENT_BY_MODE = { hr: 263, sales: 218 };
+const EVENT_BY_MODE = { hr: 284, sales: 218 };
 const FORMS = {
-  263: { // HR Activity
+  284: { // Auto Dialer - HR activity: HR Activity's fields, but Function is mx_Custom_7 and Task Status mx_Custom_8 here
     // Same order and sections as HR's form in LSQ, so it feels familiar; the rest sits under "More fields".
     sections: [
-      ['Lead Qualification', ['mx_Custom_9', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1', 'mx_Custom_3', 'mx_Custom_23', 'ActivityEvent_Note', 'mx_Custom_44', 'mx_Custom_4']],
-      ['Screening Check Points', ['mx_Custom_20', 'mx_Custom_14', 'mx_Custom_15', 'mx_Custom_16', 'mx_Custom_17', 'mx_Custom_18', 'mx_Custom_22', 'mx_Custom_43', 'mx_Custom_5', 'mx_Custom_50', 'mx_Custom_49']],
+      ['Lead Qualification', ['mx_Custom_7', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1', 'mx_Custom_3', 'mx_Custom_23', 'ActivityEvent_Note', 'mx_Custom_44', 'mx_Custom_4']],
+      ['Screening Check Points', ['mx_Custom_20', 'mx_Custom_14', 'mx_Custom_15', 'mx_Custom_16', 'mx_Custom_17', 'mx_Custom_18', 'mx_Custom_22', 'mx_Custom_43', 'mx_Custom_8', 'mx_Custom_50', 'mx_Custom_49']],
     ],
     // Carried over from the last saved activity on the phone, so the reason screen needs one tap.
-    sticky: ['mx_Custom_2', 'mx_Custom_9', 'mx_Custom_10'],
-    defaults: { mx_Custom_2: 'Screening Round', mx_Custom_9: 'Sales', mx_Custom_10: 'BDA / BDT' },
+    sticky: ['mx_Custom_2', 'mx_Custom_7', 'mx_Custom_10'],
+    defaults: { mx_Custom_2: 'Screening Round', mx_Custom_7: 'Sales', mx_Custom_10: 'BDA / BDT' },
+  },
+  // HR Activity, used until 2026-11-07. Kept so calls marked before then still show in Recent activity.
+  263: {
+    sections: [
+      ['Lead Qualification', ['mx_Custom_9', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1', 'mx_Custom_3', 'mx_Custom_23', 'ActivityEvent_Note', 'mx_Custom_44', 'mx_Custom_4']],
+    ],
+    sticky: [],
+    defaults: {},
   },
   218: { // BDA Activity. Sales stays closed (SALES_READY) until an LSQ admin makes "Spoke with" optional.
     sections: [[null, ['mx_Custom_1', 'Status', 'mx_Custom_4', 'mx_Custom_31', 'mx_Custom_3', 'ActivityEvent_Note', 'mx_Custom_26']]],

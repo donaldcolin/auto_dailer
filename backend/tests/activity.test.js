@@ -3,13 +3,13 @@ jest.mock('../config/lsq', () => ({ lsqClient: { post: (...a) => mockPost(...a),
 jest.mock('../config/supabase', () => ({}));
 const { FORMS, activityEventFor, toForm, toLsqFields, postActivity } = require('../services/activity');
 
-// A cut-down HR Activity (263) as ActivityTypes.Get returns it: option sets are JSON strings.
+// A cut-down HR activity (284) as ActivityTypes.Get returns it: option sets are JSON strings.
 const opts = vs => JSON.stringify(vs.map(Value => ({ Value })));
 const field = (SchemaName, DisplayName, DataType, Sequence, extra = {}) =>
   ({ SchemaName, DisplayName, DataType, Sequence, ShowInForm: true, IsMandatory: false, ParentField: '', OptionSet: '', DependentOptionSet: '', ...extra });
 const TYPE = {
-  ActivityEvent: 263,
-  DisplayName: 'HR Activity',
+  ActivityEvent: 284,
+  DisplayName: 'Auto Dialer - HR activity',
   Fields: [
     field('mx_Custom_3', 'Reason of Call failure ', 'SearchableDropdown', 3, {
       ParentField: 'mx_Custom_1', DependentOptionSet: JSON.stringify([{ Parent: 'No', Options: [{ Value: 'Did not pick' }, { Value: 'Switched Off' }] }]),
@@ -24,8 +24,8 @@ const TYPE = {
 };
 const form = toForm(TYPE);
 
-test('the mode picks the activity: HR 263, Sales 218, nothing before setup', () => {
-  expect(activityEventFor({ mode: 'hr' })).toBe(263);
+test('the mode picks the activity: HR 284, Sales 218, nothing before setup', () => {
+  expect(activityEventFor({ mode: 'hr' })).toBe(284);
   expect(activityEventFor({ mode: 'sales' })).toBe(218);
   expect(activityEventFor({ groups: ['Team HR'] })).toBeNull();
 });
@@ -76,9 +76,9 @@ test('post: with the caller\'s own keys, on the lead, owned by the caller, at th
 });
 
 test('HR form follows LSQ order and sections, each field once', () => {
-  const [first, second] = FORMS[263].sections;
+  const [first, second] = FORMS[284].sections;
   expect(first[0]).toBe('Lead Qualification');
-  expect(first[1].slice(0, 4)).toEqual(['mx_Custom_9', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1']);
+  expect(first[1].slice(0, 4)).toEqual(['mx_Custom_7', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1']);
   expect(second[0]).toBe('Screening Check Points');
   expect(new Set([...first[1], ...second[1]]).size).toBe(first[1].length + second[1].length);
 });

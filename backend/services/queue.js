@@ -14,7 +14,7 @@ const COLUMNS = `ProspectID,FirstName,LastName,Phone,Mobile,ProspectStage,OwnerI
 const SKIP_BY_DEFAULT = new Set(['Signup Done', 'Payment Done', 'Customer', 'Disqualified']);
 // HR keeps every candidate in one stage ("HR New Lead") and records outcomes in HR Activity, so its default
 // queue is the candidates nobody has spoken to yet (Donald, 2026-11-04). Unanswered ones return on later days.
-const HR_EVENT = 263;
+const HR_EVENT = 284;
 // Only real Team HR members: anyone else in HR mode (Donald testing, the HR manager) keeps their own queue.
 const keepByDefault = profile => {
   const hr = activityEventFor(profile) === HR_EVENT && (profile.groups || []).includes('Team HR');
