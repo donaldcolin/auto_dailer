@@ -471,21 +471,19 @@ export default function DialerScreen({ me }) {
             )}
           </Pressable>
 
-          <Text style={styles.sectionTitle}>
+          <Text style={[styles.sectionTitle, phase === 'outcome' && { marginBottom: 12 }]}>
             {phase === 'reason' ? "Why didn't it connect?" : form.name}
           </Text>
-          <Text style={styles.sectionHint}>
-            {phase === 'reason' ? `Tap a reason to save the ${form.name}.` : 'Fill in this call, then tap Save.'}
-          </Text>
+          {phase === 'reason' && <Text style={styles.sectionHint}>Tap a reason to save the {form.name}.</Text>}
 
           {phase === 'reason' && (
-            <ScrollView style={styles.outcomes}>
+            <ScrollView style={styles.outcomes} contentContainerStyle={styles.outcomeList}>
               {reasons.map((r, i) => (
                 <Pressable
                   key={r}
                   accessibilityRole="button"
                   disabled={saving}
-                  style={({ pressed }) => [styles.outcome, i === reasons.length - 1 && styles.lastRow, pressed && styles.pressed]}
+                  style={({ pressed }) => [styles.outcome, pressed && styles.outcomePressed]}
                   onPress={async () => {
                     setSavingReason(r);
                     await submit({ ...values, [form.connected.reason]: r });
@@ -499,7 +497,14 @@ export default function DialerScreen({ me }) {
             </ScrollView>
           )}
           {phase === 'reason' && (
-            <Text style={styles.fullForm} onPress={() => setPhase('outcome')}>Fill the full form instead</Text>
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.outcome, styles.fullForm, pressed && styles.outcomePressed]}
+              onPress={() => setPhase('outcome')}
+            >
+              <Text style={styles.outcomeText}>Fill the full form instead</Text>
+              <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+            </Pressable>
           )}
 
           {phase === 'outcome' && (
@@ -737,13 +742,16 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 20, fontWeight: '600', color: colors.text },
   sectionHint: { fontSize: 15, color: colors.muted, marginTop: 2, marginBottom: 12 },
   formBox: { flex: 1 },
-  fullForm: { fontSize: 15, color: colors.text, textDecorationLine: 'underline', paddingVertical: 16 },
+  fullForm: { marginTop: 20, marginBottom: 16 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
   callName: { fontSize: 30, fontWeight: '600', color: colors.text, marginBottom: 4 },
-  outcomes: { flexGrow: 0, ...card },
-  outcome: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  outcomes: { flexGrow: 0 },
+  outcomeList: { gap: 8 },
+  // Same grey cards as the call form, so both screens after a call look alike.
+  outcome: { ...card, backgroundColor: '#F7F7F7', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 56, paddingVertical: 10, paddingHorizontal: 16 },
+  outcomePressed: { backgroundColor: '#EBEBEB' },
   lastRow: { borderBottomWidth: 0 },
-  outcomeText: { fontSize: 18, color: colors.text },
+  outcomeText: { fontSize: 15, color: colors.text },
   pressed: { backgroundColor: '#F5F5F5' },
 
   details: { ...card, marginTop: 20, paddingHorizontal: 16, paddingVertical: 8 },

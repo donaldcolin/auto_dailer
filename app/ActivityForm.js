@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { card, colors } from './ui';
 
@@ -24,13 +25,30 @@ const showDate = (iso) => {
 /** The LSQ activity form, built from /api/activity-form. The team's sections first, the rest under "More fields". */
 export default function ActivityForm({ form, values, onChange }) {
   const [more, setMore] = useState(false);
-  const [picking, setPicking] = useState(null); // the dropdown field being chosen
+  const [picking, setPicking] = useState(null); // the schema of the dropdown that's open
+  const scroll = useRef(null);
+  const view = useRef({ height: 0, y: 0 });
+  const rows = useRef({});
   const set = (schema, v) => onChange(setValue(form, values, schema, v));
   // A dependent dropdown with nothing to offer (e.g. the failure reason on a connected call) is hidden.
   const visible = (f) => !f.dependent || optionsFor(f, values).length > 0;
   const sections = form.sections.map(([title, schemas]) => [title, schemas.map((s) => form.fields.find((f) => f.schema === s)).filter((f) => f && visible(f))]);
   const placed = form.sections.flatMap(([, schemas]) => schemas);
   const rest = form.fields.filter((f) => !placed.includes(f.schema) && visible(f));
+
+  const toggle = (setOpen) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setOpen();
+  };
+
+  // An option list opened near the bottom would stay below the screen, so bring it into view.
+  useEffect(() => {
+    if (!picking) return;
+    rows.current[picking]?.measureLayout(scroll.current.getInnerViewRef(), (x, y, w, h) => {
+      const bottom = y + h + 8 - view.current.height;
+      if (bottom > view.current.y) scroll.current.scrollTo({ y: Math.min(y, bottom) });
+    });
+  }, [picking]);
 
   function pickDate(f) {
     const value = values[f.schema] ? new Date(values[f.schema]) : new Date();
@@ -46,31 +64,55 @@ export default function ActivityForm({ form, values, onChange }) {
     });
   }
 
-  function field(f, i, list) {
+  function field(f) {
     const v = values[f.schema];
-    const rowStyle = [styles.row, i === list.length - 1 && styles.lastRow];
     if (f.type === 'dropdown' || f.type === 'datetime') {
+      const open = picking === f.schema;
+      const isDate = f.type === 'datetime';
       return (
-        <Pressable
-          key={f.schema}
-          accessibilityRole="button"
-          accessibilityLabel={`${f.label}: ${v || 'not set'}`}
-          style={({ pressed }) => [rowStyle, pressed && styles.pressed]}
-          onPress={() => (f.type === 'dropdown' ? setPicking(f) : pickDate(f))}
-        >
-          <Text style={styles.label}>{f.label}{f.required ? ' *' : ''}</Text>
-          <Text style={[styles.value, !v && styles.empty]}>{v ? (f.type === 'datetime' ? showDate(v) : v) : 'Choose'}</Text>
-        </Pressable>
+        <View key={f.schema} ref={(r) => { rows.current[f.schema] = r; }} collapsable={false} style={styles.row}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${f.label}: ${v || 'not set'}`}
+            accessibilityState={isDate ? undefined : { expanded: open }}
+            style={styles.rowHead}
+            onPress={() => (isDate ? pickDate(f) : toggle(() => setPicking(open ? null : f.schema)))}
+          >
+            <Text style={styles.label}>{f.label}</Text>
+            <Text style={[styles.value, !v && styles.empty]} numberOfLines={1}>
+              {v ? (isDate ? showDate(v) : v) : f.required ? 'Required' : 'Choose'}
+            </Text>
+            <Ionicons name={isDate ? 'calendar-outline' : open ? 'chevron-up' : 'chevron-down'} size={20} color={colors.muted} />
+          </Pressable>
+          {open && (
+            <View style={styles.options}>
+              {optionsFor(f, values).map((o) => (
+                <Pressable
+                  key={o}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: v === o }}
+                  style={[styles.option, v === o && styles.optionOn]}
+                  onPress={() => {
+                    set(f.schema, v === o ? '' : o); // tapping the chosen option clears it
+                    toggle(() => setPicking(null));
+                  }}
+                >
+                  <Text style={[styles.optionText, v === o && styles.optionTextOn]}>{o}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </View>
       );
     }
     return (
-      <View key={f.schema} style={rowStyle}>
-        <Text style={styles.label}>{f.label}{f.required ? ' *' : ''}</Text>
+      <View key={f.schema} style={[styles.row, styles.textRow]}>
+        <Text style={styles.textLabel}>{f.label}</Text>
         <TextInput
           style={styles.input}
           value={v || ''}
           onChangeText={(t) => set(f.schema, t)}
-          placeholder="Type here"
+          placeholder={f.required ? 'Required' : 'Type here'}
           placeholderTextColor={colors.muted}
           keyboardType={f.type === 'number' ? 'numeric' : 'default'}
           multiline={f.schema === 'ActivityEvent_Note'}
@@ -81,63 +123,52 @@ export default function ActivityForm({ form, values, onChange }) {
   }
 
   return (
-    <>
-      <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-        {sections.map(([title, list]) => (
-          <View key={title || 'form'} style={styles.section}>
-            {!!title && <Text style={styles.sectionTitle}>{title}</Text>}
-            <View style={card}>{list.map(field)}</View>
-          </View>
-        ))}
-        <Pressable accessibilityRole="button" onPress={() => setMore(!more)} style={styles.more}>
-          <Text style={styles.moreText}>{more ? 'Fewer fields' : `More fields (${rest.length})`}</Text>
+    <ScrollView
+      ref={scroll}
+      contentContainerStyle={styles.form}
+      keyboardShouldPersistTaps="handled"
+      onLayout={(e) => { view.current.height = e.nativeEvent.layout.height; }}
+      onScroll={(e) => { view.current.y = e.nativeEvent.contentOffset.y; }}
+      scrollEventThrottle={100}
+    >
+      {sections.map(([title, list]) => (
+        <View key={title || 'form'} style={styles.section}>
+          {!!title && <Text style={styles.sectionTitle}>{title}</Text>}
+          {list.map(field)}
+        </View>
+      ))}
+      <View style={styles.section}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: more }}
+          style={[styles.row, styles.rowHead]}
+          onPress={() => toggle(() => setMore(!more))}
+        >
+          <Text style={styles.label}>More fields</Text>
+          <Text style={[styles.value, styles.empty]}>{rest.length}</Text>
+          <Ionicons name={more ? 'chevron-up' : 'chevron-down'} size={20} color={colors.muted} />
         </Pressable>
-        {more && <View style={card}>{rest.map(field)}</View>}
-      </ScrollView>
-
-      <Modal visible={!!picking} transparent animationType="slide" onRequestClose={() => setPicking(null)}>
-        <Pressable style={styles.scrim} onPress={() => setPicking(null)} accessibilityLabel="Close" />
-        {picking && (
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>{picking.label}</Text>
-            <ScrollView>
-              {['', ...optionsFor(picking, values)].map((o) => (
-                <Pressable
-                  key={o || '(none)'}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [styles.option, pressed && styles.pressed]}
-                  onPress={() => { set(picking.schema, o); setPicking(null); }}
-                >
-                  <Text style={[styles.optionText, !o && styles.empty, values[picking.schema] === o && o && styles.chosen]}>
-                    {o || 'None'}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-        )}
-      </Modal>
-    </>
+        {more && rest.map(field)}
+      </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   form: { paddingBottom: 24, gap: 20 },
   section: { gap: 8 },
-  sectionTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
-  row: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
-  lastRow: { borderBottomWidth: 0 },
-  pressed: { backgroundColor: '#F5F5F5' },
-  label: { fontSize: 13, color: colors.muted, marginBottom: 4 },
-  value: { fontSize: 17, color: colors.text },
-  empty: { color: colors.muted },
-  input: { fontSize: 17, color: colors.text, padding: 0 },
-  more: { paddingBottom: 8 },
-  moreText: { fontSize: 15, color: colors.text, textDecorationLine: 'underline' },
-  scrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' },
-  sheet: { maxHeight: '60%', backgroundColor: colors.bg, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 24, paddingTop: 20, paddingBottom: 24 },
-  sheetTitle: { fontSize: 15, color: colors.muted, marginBottom: 8 },
-  option: { paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
-  optionText: { fontSize: 17, color: colors.text },
-  chosen: { fontWeight: '600' },
+  sectionTitle: { fontSize: 15, fontWeight: '600', color: colors.text, marginBottom: 4 },
+  row: { ...card, backgroundColor: '#F7F7F7' }, // same as the lead card above
+  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 56, paddingHorizontal: 16, paddingVertical: 10 },
+  label: { flex: 1, fontSize: 15, color: colors.text },
+  value: { flexShrink: 1, maxWidth: '50%', fontSize: 15, fontWeight: '600', color: colors.text, textAlign: 'right' },
+  empty: { fontWeight: '400', color: colors.muted },
+  options: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingBottom: 16 },
+  option: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 22, backgroundColor: colors.bg },
+  optionOn: { backgroundColor: colors.text },
+  optionText: { fontSize: 15, color: colors.text },
+  optionTextOn: { color: colors.bg, fontWeight: '600' },
+  textRow: { paddingHorizontal: 16, paddingVertical: 14, gap: 6 },
+  textLabel: { fontSize: 15, color: colors.text },
+  input: { fontSize: 15, color: colors.text, padding: 0, minHeight: 24 },
 });
