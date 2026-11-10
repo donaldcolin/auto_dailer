@@ -40,6 +40,11 @@ SIM-based progressive auto-dialer for associates (counsellors), plus a rules das
 - Test against the Mac's backend: `cd backend && PORT=4000 node server.js`, then `adb reverse tcp:4000 tcp:4000` (the app's `EXPO_PUBLIC_API_URL` is `http://localhost:4000`, in `app/.env`).
 - Login: Google via Supabase OAuth (redirect `dialer://auth`). The Google OAuth client currently lives in Donald's personal Google Cloud project, Testing mode: new testers must be added as test users there.
 
+## Shipping updates to 126 phones (decided 2026-11-10)
+- JS changes go over the air (`expo-updates`, EAS Update free plan, Expo account `donaldcolind`, channel `production`): `app/publish-update.sh "what changed"`. Phones download it on one open and run it from the next. Always use the script: plain `eas update --environment` skips `app/.env`, and that bundle shows a blank screen (happened in testing, 2026-11-10); the script refuses to publish a bundle without the backend and Supabase addresses.
+- `runtimeVersion` uses the **fingerprint** policy, which hashes `modules/dialer/android`, native deps and config plugins. A native change gives a new fingerprint, so older APKs never receive that update: build a new APK instead.
+- New APK: bump `android.versionCode` in `app.json`, build, then `cd backend && node scripts/upload-apk.js` (checks the release key, uploads `dialer-<versionCode>.apk` to the public Supabase bucket `app`, prints the values), then set `APK_URL` and `APK_BUILD` on Railway. Older phones show "A new version of the app is ready"; new users install from `<backend>/download`.
+
 ## Backend
 - `backend/`: Express 5 + Supabase. Tests: `cd backend && npx jest`. Env in `backend/.env` (see `.env.example`); `SUPABASE_URL` is the base `https://<id>.supabase.co`, no `/rest/v1`.
 

@@ -8,6 +8,9 @@ app.use(cors({ origin: true }));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+// The newest APK (Railway env). Phones on an older build show "Update available"; /download is the link new users get.
+app.get('/api/app-version', (req, res) => res.json({ build: Number(process.env.APK_BUILD) || 0, url: process.env.APK_URL || null }));
+app.get('/download', (req, res) => (process.env.APK_URL ? res.redirect(process.env.APK_URL) : res.status(404).send('No APK yet')));
 app.use('/api/me', require('./routes/me'));
 app.use('/api/setup', require('./routes/setup'));
 app.use('/api/lists', require('./routes/lists'));

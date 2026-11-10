@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import * as Application from 'expo-application';
+import { ActivityIndicator, Linking, Pressable, StatusBar as RNStatusBar, Text, View } from 'react-native';
 import DialerScreen from './DialerScreen';
 import LoginScreen from './LoginScreen';
 import SetupScreen from './SetupScreen';
@@ -19,6 +20,14 @@ export default function App() {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => data.subscription.unsubscribe();
+  }, []);
+
+  // A newer APK than this one (native changes only; everything else arrives over the air).
+  const [newBuild, setNewBuild] = useState(false);
+  useEffect(() => {
+    fetch(`${process.env.EXPO_PUBLIC_API_URL}/api/app-version`).then((r) => r.json())
+      .then(({ build }) => setNewBuild(build > Number(Application.nativeBuildVersion)))
+      .catch(() => {}); // offline: check again on next open
   }, []);
 
   const userId = session?.user.id;
@@ -47,10 +56,20 @@ export default function App() {
   else screen = <DialerScreen key={userId} me={me} />;
 
   return (
-    <>
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      {newBuild && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => Linking.openURL(`${process.env.EXPO_PUBLIC_API_URL}/download`)}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F7F7F7', paddingHorizontal: 24, paddingTop: (RNStatusBar.currentHeight || 24) + 12, paddingBottom: 12 }}
+        >
+          <Text style={{ flex: 1, color: colors.text, fontSize: 15 }}>A new version of the app is ready.</Text>
+          <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>Update</Text>
+        </Pressable>
+      )}
       {screen}
       {/* The app is always white, so status bar icons are always dark (auto would turn them white in dark mode). */}
       <StatusBar style="dark" />
-    </>
+    </View>
   );
 }

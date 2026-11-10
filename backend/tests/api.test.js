@@ -232,3 +232,14 @@ test('/api/lead/:id/history: an associate only sees their own leads', async () =
   expect(ok.body.history).toEqual([{ what: 'HR Activity' }]);
   byIds.mockRestore(); hist.mockRestore();
 });
+
+test('/api/app-version and /download follow APK_URL and APK_BUILD, no token needed', async () => {
+  delete process.env.APK_URL; delete process.env.APK_BUILD;
+  expect((await request(app).get('/api/app-version')).body).toEqual({ build: 0, url: null });
+  expect((await request(app).get('/download')).status).toBe(404);
+  process.env.APK_URL = 'https://x.test/dialer.apk'; process.env.APK_BUILD = '3';
+  expect((await request(app).get('/api/app-version')).body).toEqual({ build: 3, url: 'https://x.test/dialer.apk' });
+  const dl = await request(app).get('/download');
+  expect([dl.status, dl.headers.location]).toEqual([302, 'https://x.test/dialer.apk']);
+  delete process.env.APK_URL; delete process.env.APK_BUILD;
+});

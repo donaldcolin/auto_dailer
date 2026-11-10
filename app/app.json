@@ -20,7 +20,8 @@
         "android.permission.READ_PHONE_STATE",
         "android.permission.READ_CALL_LOG",
         "android.permission.SYSTEM_ALERT_WINDOW"
-      ]
+      ],
+      "versionCode": 2
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -31,6 +32,21 @@
       "@react-native-community/datetimepicker",
       "./plugins/withReleaseSigning"
     ],
-    "scheme": "dialer"
+    "scheme": "dialer",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      },
+      "url": "https://u.expo.dev/c6efd5fa-d173-49e4-b189-0700477a1747"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c6efd5fa-d173-49e4-b189-0700477a1747"
+      }
+    },
+    "owner": "donaldcolind"
   }
 }
