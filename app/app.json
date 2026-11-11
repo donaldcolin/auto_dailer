@@ -19,9 +19,12 @@
         "android.permission.CALL_PHONE",
         "android.permission.READ_PHONE_STATE",
         "android.permission.READ_CALL_LOG",
-        "android.permission.SYSTEM_ALERT_WINDOW"
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.MANAGE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
-      "versionCode": 2
+      "versionCode": 3
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -30,7 +33,8 @@
       "expo-sqlite",
       "expo-web-browser",
       "@react-native-community/datetimepicker",
-      "./plugins/withReleaseSigning"
+      "./plugins/withReleaseSigning",
+      "./plugins/withLegacyStorage"
     ],
     "scheme": "dialer",
     "runtimeVersion": {

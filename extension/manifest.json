@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Dialer: open leads on laptop",
+  "version": "1.0.0",
+  "description": "Opens a lead in LeadSquared when you tap Open on laptop in the Kalvium Dialer app.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAumvguiOKcdHb1SCm7s9dLtsW69Vt7K49Q482R5bsdE+tnXMU24YPWOf7LDob6Z8xTB+eTr56hXqGEwNoWmri2NKAqGxcSUlrXC4DfyVa9gksqPObyP+UsO9xqf2O6OyWHwJNnc5DIAHAajcBevdWa70WAP86Sx2aNb5Ew8q4F6CLiFt0qg7pEfQD2A41aKQKmw4o3YGGujLU+ipH8d9fIMdnZP3J9wAl8a5yKs1RHx0dmF8AYpZOlL1RZRghKAhd9K0mqq7Yzv6U6swKB7APvMKykIL/k+e0VJZx1+9fu6IVvkQOZpDYdiMq9mpikDbDv5aEf0b6g0j+FrXMzapGXwIDAQAB",
+  "permissions": ["identity", "storage", "alarms"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Dialer" },
+  "icons": { "128": "icon.png" }
+}

@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
+import RecordingsScreen from './RecordingsScreen';
 import SetupScreen from './SetupScreen';
 import Dialer from './modules/dialer';
 import { api, OFFLINE } from './lib/api';
+import { syncRecordings, syncRecordingsSoon } from './lib/recordings';
 import { supabase } from './lib/supabase';
 import { Btn, card, colors, Skeleton, Toast, wordmark } from './ui';
 
@@ -80,9 +82,11 @@ const pretty = (phone) => dialable(phone).replace(/^(\+91)?(\d{5})(\d{5})$/, (_,
  * Every lead dialed or skipped is saved, so the next /api/queue no longer returns it.
  */
 export default function DialerScreen({ me }) {
+  const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false); // update-your-key screen, on top so a marked activity isn't lost
   const [granted, setGranted] = useState(false);
   const [canFront, setCanFront] = useState(true);
+  const [filesAccess, setFilesAccess] = useState(true); // call recordings are copied for Callyzer only with it
   const [phase, setPhaseState] = useState('idle'); // idle | loading | countdown | calling | outcome | paused | done
   const [lead, setLead] = useState(null);
   const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, leads }
@@ -94,6 +98,7 @@ export default function DialerScreen({ me }) {
   const countdownBar = useRef(new Animated.Value(1)).current;
   const [leadOpen, setLeadOpen] = useState(false); // marking: the form gets the room unless the caller opens the lead
   const [talkSeconds, setTalkSeconds] = useState(0);
+  const [callback, setCallback] = useState(false); // marking a lead who called back after a missed call
   const [toast, setToast] = useState(null); // "HR Activity saved for Akhila", shown for a moment after each save
   const toastTimer = useRef(null);
   const [error, setError] = useState(null);
@@ -117,6 +122,7 @@ export default function DialerScreen({ me }) {
   const formRef = useRef(null);
   const queueRef = useRef({ leads: [], rule: null, source: null });
   const handledRef = useRef(new Set()); // prospect ids saved or skipped since the last Start
+  const incomingRef = useRef(null); // { since }: a call rang in; checked against today's missed leads once it ends
   formRef.current = form;
 
   useEffect(() => {
@@ -129,6 +135,12 @@ export default function DialerScreen({ me }) {
     loadQueue().catch((e) => setError(e.message));
 
     const callSub = Dialer.addListener('onCallState', ({ state }) => {
+      if (state === 'RINGING' && phaseRef.current !== 'calling') {
+        incomingRef.current = { since: Date.now() - 2000 };
+        if (phaseRef.current === 'countdown') pause(); // never dial while a call rings in
+      }
+      if (state === 'IDLE' && incomingRef.current) checkCallback();
+      if (state === 'IDLE') syncRecordingsSoon(); // any call that just ended: its recording goes to Callyzer's folder
       const call = callRef.current;
       if (!call || phaseRef.current !== 'calling') return;
       if (state === 'OFFHOOK') call.sawOffhook = true;
@@ -136,11 +148,16 @@ export default function DialerScreen({ me }) {
     });
     // Android may hold our JS while the call screen is on top; back in front, check the call log too.
     setCanFront(Dialer.canBringToFront());
+    setFilesAccess(Dialer.hasAllFilesAccess());
     const appSub = AppState.addEventListener('change', (s) => {
       if (s !== 'active') return;
       setCanFront(Dialer.canBringToFront()); // re-check after returning from Settings
       if (phaseRef.current === 'calling') finishCall(false);
+      if (incomingRef.current) checkCallback();
+      setFilesAccess(Dialer.hasAllFilesAccess());
+      syncRecordings();
     });
+    syncRecordings();
     return () => {
       callSub.remove();
       appSub.remove();
@@ -266,6 +283,7 @@ export default function DialerScreen({ me }) {
       loadQueue().catch(() => {});
     }
     if (!left.length) { setLead(null); setPhase('done'); return; }
+    setCallback(false);
     setLead({ ...left[0], ruleId: queueRef.current.rule?.id || null });
     setCountdown(COUNTDOWN_SEC);
     setHeld(false);
@@ -308,6 +326,45 @@ export default function DialerScreen({ me }) {
     setPhase(seconds > 0 ? 'outcome' : 'reason');
   }
 
+  // A lead missed today called back and the counsellor picked up: once that call ends, show the lead's form.
+  // Only while the dialer is open, and never over a call being marked.
+  async function checkCallback() {
+    const ring = incomingRef.current;
+    if (!ring || ring.checking) return;
+    ring.checking = true;
+    let row = null;
+    for (let i = 0; !row && i < 5; i++) {
+      row = await Dialer.lastIncomingCall(ring.since);
+      if (!row) await sleep(1000);
+    }
+    // No row: still on the call, or it was missed. Kept, so the next IDLE or return to the app checks again.
+    if (!row) { ring.checking = false; return; }
+    if (incomingRef.current === ring) incomingRef.current = null;
+    const free = () => formRef.current && ['idle', 'done', 'paused'].includes(phaseRef.current);
+    if (!row.durationSec || !free()) return;
+    const found = await api('/api/lead/callback', { method: 'POST', body: { phone: row.number } }).catch(() => null);
+    if (!found?.lead || !free()) return;
+    const l = { ...found.lead, ruleId: null };
+    callRef.current = { lead: l, startedAt: new Date(row.date).toISOString(), returnTo: phaseRef.current };
+    setLead(l);
+    setLeadOpen(false);
+    setCallback(true);
+    setTalkSeconds(row.durationSec);
+    setValues(startValues(formRef.current, 'Yes'));
+    setPhase('outcome');
+    Dialer.bringToFront();
+  }
+
+  // Opens this lead in LSQ on the person's laptop, through the Chrome extension signed in as them.
+  async function openOnLaptop() {
+    try {
+      await api(`/api/lead/${encodeURIComponent(lead.prospectId)}/open-on-laptop`, { method: 'POST' });
+      showToast('Sent to your laptop');
+    } catch (e) {
+      setError(`Couldn't send to your laptop: ${e.message}`);
+    }
+  }
+
   // Returns false when not saved; the call stays open so a marked activity can be sent again.
   async function save(outcome, seconds, activity) {
     const call = callRef.current;
@@ -335,6 +392,7 @@ export default function DialerScreen({ me }) {
   // Send the marked activity, remember the sticky fields for the next call, move on.
   async function submit(vals) {
     if (saving) return;
+    const returnTo = callRef.current?.returnTo; // a callback goes back to where the counsellor was
     setSaving(true);
     const connected = vals[form.connected?.schema] !== 'No';
     const ok = await save(connected ? 'connected' : 'no_answer', talkSeconds, vals);
@@ -342,7 +400,7 @@ export default function DialerScreen({ me }) {
     if (!ok) return;
     rememberSticky(form, vals);
     showToast(`${form.name} saved for ${lead.name || 'lead'}`);
-    next();
+    if (returnTo) { setCallback(false); setLead(null); setPhase(returnTo); } else next();
   }
 
   // Instant: the next lead comes up at once (waiting on the save let the countdown run on, and the buttons shift
@@ -378,7 +436,7 @@ export default function DialerScreen({ me }) {
   const status = {
     countdown: held ? 'Paused' : `Calling in ${countdown}`,
     calling: 'On call',
-    outcome: talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
+    outcome: callback ? `Called you back, ${talkSeconds} s` : talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
     reason: 'Not answered',
     loading: 'Next lead',
   }[phase];
@@ -411,6 +469,10 @@ export default function DialerScreen({ me }) {
         />
       </Modal>
 
+      <Modal visible={recordingsOpen} animationType="slide" onRequestClose={() => setRecordingsOpen(false)}>
+        <RecordingsScreen onClose={() => setRecordingsOpen(false)} />
+      </Modal>
+
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable style={styles.menuScrim} onPress={() => setMenuOpen(false)} accessibilityLabel="Close menu">
           <View style={styles.menu}>
@@ -429,6 +491,14 @@ export default function DialerScreen({ me }) {
             >
               <Ionicons name="key-outline" size={20} color={colors.text} />
               <Text style={styles.menuText}>Update LeadSquared key</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+              onPress={() => { setMenuOpen(false); setRecordingsOpen(true); }}
+            >
+              <Ionicons name="mic-outline" size={20} color={colors.text} />
+              <Text style={styles.menuText}>Call recordings</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -469,6 +539,14 @@ export default function DialerScreen({ me }) {
                 <LeadHistory history={histories[lead.prospectId] || {}} compact />
               </>
             )}
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.laptop, pressed && styles.outcomePressed]}
+            onPress={openOnLaptop}
+          >
+            <Ionicons name="laptop-outline" size={18} color={colors.text} />
+            <Text style={styles.laptopText}>Open on laptop</Text>
           </Pressable>
 
           <Text style={[styles.sectionTitle, phase === 'outcome' && { marginBottom: 12 }]}>
@@ -582,6 +660,12 @@ export default function DialerScreen({ me }) {
               <Text style={styles.noticeLink} onPress={loadForm}>Try again</Text>
             </Text>
           )}
+          {!filesAccess && (
+            <Text style={styles.notice}>
+              Turn on "All files access" so your call recordings reach Callyzer.{' '}
+              <Text style={styles.noticeLink} onPress={() => setRecordingsOpen(true)}>Set up</Text>
+            </Text>
+          )}
           {!canFront && (
             <Text style={styles.notice}>
               Turn on "Display over other apps" so the dialer returns after each call.{' '}
@@ -666,7 +750,8 @@ export default function DialerScreen({ me }) {
           </View>
         )}
         {phase === 'reason' && <Btn title="Pause after this" kind="plain" onPress={pause} />}
-        {phase === 'outcome' && (
+        {phase === 'outcome' && callback && <Btn title={saving ? 'Saving…' : 'Save'} onPress={() => submit(values)} disabled={saving} />}
+        {phase === 'outcome' && !callback && (
           <View style={styles.pair}>
             <Btn title="Pause after" kind="plain" onPress={pause} style={styles.half} />
             <Btn title={saving ? 'Saving…' : 'Save'} onPress={() => submit(values)} disabled={saving} style={styles.half} />
@@ -736,6 +821,8 @@ const styles = StyleSheet.create({
   mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
   leadCard: { ...card, backgroundColor: '#F7F7F7', paddingHorizontal: 16, paddingVertical: 12, marginBottom: 20 },
   leadHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  laptop: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 8, minHeight: 44, paddingHorizontal: 16, marginTop: -8, marginBottom: 20, borderRadius: 22, borderWidth: 1.5, borderColor: colors.line },
+  laptopText: { fontSize: 15, fontWeight: '500', color: colors.text },
   teamBody: { flex: 1, minWidth: 0 },
   cardName: { fontSize: 17, fontWeight: '600', color: colors.text },
   cardMeta: { fontSize: 14, color: colors.muted, lineHeight: 20, marginTop: 1 },

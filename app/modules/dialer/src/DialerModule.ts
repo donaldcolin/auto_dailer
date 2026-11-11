@@ -7,6 +7,12 @@ declare class DialerModule extends NativeModule<DialerModuleEvents> {
   startCallStateListener(): void;
   stopCallStateListener(): void;
   lastOutgoingCall(sinceMs: number): Promise<OutgoingCall | null>;
+  lastIncomingCall(sinceMs: number): Promise<OutgoingCall | null>;
+  bringToFront(): void;
+  hasAllFilesAccess(): boolean;
+  openAllFilesAccessSettings(): void;
+  findRecentAudio(sinceMs: number): Promise<{ folder: string; modified: number; size: number }[]>;
+  copyNewRecordings(folder: string, sinceMs: number, done: string[]): Promise<string[]>;
   canBringToFront(): boolean;
   openBringToFrontSettings(): void;
   startKeepAlive(): void;
