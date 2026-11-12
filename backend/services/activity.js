@@ -3,13 +3,49 @@ const { keyHeaders } = require('./lsq_keys');
 
 // The LSQ activity each mode marks after a call, and how the app lays out its form.
 const EVENT_BY_MODE = { hr: 284, sales: 218 };
+
+// HR form rules. `when`: every field must have that value, or any value for `true`.
+const PICKED = { mx_Custom_7: true, mx_Custom_10: true, mx_Custom_2: true }; // Function, Role, Activity Type
+const SCREENING = ['mx_Custom_20', 'mx_Custom_14', 'mx_Custom_15', 'mx_Custom_16', 'mx_Custom_17', 'mx_Custom_18', 'mx_Custom_22', 'mx_Custom_43', 'mx_Custom_8', 'mx_Custom_50', 'mx_Custom_49'];
+// A round: connected → "Proceed with …"; Proceed = Yes → that round's fields.
+const round = (type, proceed, show) => [
+  { when: { ...PICKED, mx_Custom_2: type, mx_Custom_1: 'Yes' }, show: [proceed] },
+  { when: { ...PICKED, mx_Custom_2: type, mx_Custom_1: 'Yes', [proceed]: 'Yes' }, show },
+];
+// Same logic as `shown` in app/ActivityForm.js: a field some rule names shows only while one of those rules matches.
+function shown(rules, schema, values) {
+  const own = (rules || []).filter(r => r.show.includes(schema));
+  return !own.length || own.some(r => Object.entries(r.when).every(([k, v]) => (v === true ? !!values[k] : values[k] === v)));
+}
 const FORMS = {
   284: { // Auto Dialer - HR activity: HR Activity's fields, but Function is mx_Custom_7 and Task Status mx_Custom_8 here
-    // Same order and sections as HR's form in LSQ, so it feels familiar; the rest sits under "More fields".
+    // Same sections as "HR Activity form V1" in LSQ; `rules` shows each round's fields the way that form's rules do.
     sections: [
-      ['Lead Qualification', ['mx_Custom_7', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1', 'mx_Custom_3', 'mx_Custom_23', 'ActivityEvent_Note', 'mx_Custom_44', 'mx_Custom_4']],
-      ['Screening Check Points', ['mx_Custom_20', 'mx_Custom_14', 'mx_Custom_15', 'mx_Custom_16', 'mx_Custom_17', 'mx_Custom_18', 'mx_Custom_22', 'mx_Custom_43', 'mx_Custom_8', 'mx_Custom_50', 'mx_Custom_49']],
+      ['Lead Qualification', ['mx_Custom_7', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1', 'mx_Custom_3', 'mx_Custom_4',
+        'mx_Custom_23', 'mx_Custom_37', 'mx_Custom_38', 'mx_Custom_39', 'mx_Custom_40', 'mx_Custom_41', 'mx_Custom_42', 'ActivityEvent_Note', 'mx_Custom_44']],
+      ['Screening Check Points', SCREENING],
+      ['Round 1 Interview', ['mx_Custom_5', 'mx_Custom_9', 'mx_Custom_6', 'mx_Custom_45']],
+      ['Round 2 Interview', ['mx_Custom_24', 'mx_Custom_25', 'mx_Custom_26', 'mx_Custom_46']],
+      ['Round 3 Interview', ['mx_Custom_27', 'mx_Custom_28', 'mx_Custom_29', 'mx_Custom_47']],
+      ['Round 4 Interview', ['mx_Custom_30', 'mx_Custom_31', 'mx_Custom_32', 'mx_Custom_48']],
+      ['Culture Fit', ['mx_Custom_33', 'mx_Custom_34']],
+      ['Final Interview Status', ['mx_Custom_11', 'mx_Custom_35', 'mx_Custom_36']],
     ],
+    rules: [
+      // LSQ also wants Function, Role and Type here; left out so the one-tap reason is never dropped.
+      { when: { mx_Custom_1: 'No' }, show: ['mx_Custom_3', 'mx_Custom_4'] },
+      { when: { ...PICKED, mx_Custom_2: 'Screening Round', mx_Custom_1: 'Yes' }, show: ['mx_Custom_23'] },
+      { when: { ...PICKED, mx_Custom_2: 'Screening Round', mx_Custom_1: 'Yes', mx_Custom_23: 'Yes' }, show: ['mx_Custom_44'] },
+      { when: { mx_Custom_2: 'Screening Round', mx_Custom_1: 'Yes', mx_Custom_23: 'Yes', mx_Custom_44: 'Selected' }, show: SCREENING },
+      // Seen in LSQ for R1 and R2 (2026-11-12); R3, R4, Culture fit and Final follow the same pattern, not yet checked.
+      ...round('Round 1 Interview', 'mx_Custom_37', ['mx_Custom_5', 'mx_Custom_9', 'mx_Custom_6', 'mx_Custom_45']),
+      ...round('Round 2 Interview', 'mx_Custom_38', ['mx_Custom_24', 'mx_Custom_25', 'mx_Custom_26', 'mx_Custom_46']),
+      ...round('Round 3 Interview', 'mx_Custom_39', ['mx_Custom_27', 'mx_Custom_28', 'mx_Custom_29', 'mx_Custom_47']),
+      ...round('Round 4 Interview', 'mx_Custom_40', ['mx_Custom_30', 'mx_Custom_31', 'mx_Custom_32', 'mx_Custom_48']),
+      ...round('Culture fit', 'mx_Custom_41', ['mx_Custom_33', 'mx_Custom_34']),
+      ...round('Final Interview status', 'mx_Custom_42', ['mx_Custom_11', 'mx_Custom_35', 'mx_Custom_36']),
+    ],
+    more: false, // LSQ's form has nothing beyond these
     // Carried over from the last saved activity on the phone, so the reason screen needs one tap.
     sticky: ['mx_Custom_2', 'mx_Custom_7', 'mx_Custom_10'],
     defaults: { mx_Custom_2: 'Screening Round', mx_Custom_7: 'Sales', mx_Custom_10: 'BDA / BDT' },
@@ -72,6 +108,8 @@ function toForm(type) {
     connected: connected && reason ? { schema: connected.schema, reason: reason.schema } : null,
     alwaysBlank: cfg.alwaysBlank || [],
     notConnected: cfg.notConnected || {},
+    rules: cfg.rules || [],
+    more: cfg.more !== false,
   };
 }
 
@@ -102,6 +140,7 @@ function toLsqFields(form, rawInput) {
   for (const [schema, raw] of Object.entries(input || {})) {
     const f = byName.get(schema);
     if (!f) throw bad(`Unknown field ${schema}`);
+    if (!shown(form.rules, schema, input)) continue; // left over from another round: LSQ's form wouldn't send it
     const value = raw == null ? '' : String(raw).trim();
     if (!value) continue;
     if (schema === NOTE) { note = value; continue; }
@@ -118,7 +157,7 @@ function toLsqFields(form, rawInput) {
     }
     fields.push({ SchemaName: schema, Value: value });
   }
-  const missing = form.fields.find(f => f.required && f.schema !== NOTE && !fields.some(x => x.SchemaName === f.schema));
+  const missing = form.fields.find(f => f.required && f.schema !== NOTE && shown(form.rules, f.schema, input) && !fields.some(x => x.SchemaName === f.schema));
   if (missing) throw bad(`${missing.label} is required`);
   for (const schema of form.alwaysBlank || []) fields.push({ SchemaName: schema, Value: '' });
   return { fields, note };
@@ -142,4 +181,4 @@ async function activityCreatorEmail(activityId) {
   return data.CreatedByEmail || null;
 }
 
-module.exports = { FORMS, activityEventFor, getForm, toForm, toLsqFields, postActivity, activityCreatorEmail };
+module.exports = { FORMS, shown, activityEventFor, getForm, toForm, toLsqFields, postActivity, activityCreatorEmail };

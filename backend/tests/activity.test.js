@@ -1,7 +1,7 @@
 const mockPost = jest.fn();
 jest.mock('../config/lsq', () => ({ lsqClient: { post: (...a) => mockPost(...a), get: jest.fn() }, lsqUrl: p => p, lsqParams: () => ({ host: 'https://lsq' }) }));
 jest.mock('../config/supabase', () => ({}));
-const { FORMS, activityEventFor, toForm, toLsqFields, postActivity } = require('../services/activity');
+const { FORMS, shown, activityEventFor, toForm, toLsqFields, postActivity } = require('../services/activity');
 
 // A cut-down HR activity (284) as ActivityTypes.Get returns it: option sets are JSON strings.
 const opts = vs => JSON.stringify(vs.map(Value => ({ Value })));
@@ -22,7 +22,7 @@ const TYPE = {
     field('mx_Custom_99', 'Hidden', 'String', 99, { ShowInForm: false }),
   ],
 };
-const form = toForm(TYPE);
+const form = { ...toForm(TYPE), rules: [] }; // checks values only; the HR rules have their own tests
 
 test('the mode picks the activity: HR 284, Sales 218, nothing before setup', () => {
   expect(activityEventFor({ mode: 'hr' })).toBe(284);
@@ -80,7 +80,37 @@ test('HR form follows LSQ order and sections, each field once', () => {
   expect(first[0]).toBe('Lead Qualification');
   expect(first[1].slice(0, 4)).toEqual(['mx_Custom_7', 'mx_Custom_10', 'mx_Custom_2', 'mx_Custom_1']);
   expect(second[0]).toBe('Screening Check Points');
-  expect(new Set([...first[1], ...second[1]]).size).toBe(first[1].length + second[1].length);
+  const all = FORMS[284].sections.flatMap(([, s]) => s);
+  expect(new Set(all).size).toBe(all.length);
+});
+
+test("HR rules show each round the way LSQ's form does", () => {
+  const { rules } = FORMS[284];
+  const base = { mx_Custom_7: 'Sales', mx_Custom_10: 'BDA / BDT' };
+  const screening = { ...base, mx_Custom_2: 'Screening Round', mx_Custom_1: 'Yes' };
+  expect(shown(rules, 'mx_Custom_23', screening)).toBe(true); // Proceed with Screening checks
+  expect(shown(rules, 'mx_Custom_44', screening)).toBe(false); // Screening Status waits for Proceed = Yes
+  expect(shown(rules, 'mx_Custom_44', { ...screening, mx_Custom_23: 'Yes' })).toBe(true);
+  expect(shown(rules, 'mx_Custom_14', { ...screening, mx_Custom_23: 'Yes', mx_Custom_44: 'Selected' })).toBe(true);
+  expect(shown(rules, 'mx_Custom_14', { ...screening, mx_Custom_23: 'Yes', mx_Custom_44: 'Rejected' })).toBe(false);
+  const r1 = { ...base, mx_Custom_2: 'Round 1 Interview', mx_Custom_1: 'Yes' };
+  expect(shown(rules, 'mx_Custom_23', r1)).toBe(false);
+  expect(shown(rules, 'mx_Custom_37', r1)).toBe(true);
+  expect(shown(rules, 'mx_Custom_5', r1)).toBe(false);
+  expect(shown(rules, 'mx_Custom_5', { ...r1, mx_Custom_37: 'Yes' })).toBe(true);
+  expect(shown(rules, 'mx_Custom_4', { ...r1, mx_Custom_1: 'No' })).toBe(true); // Follow Up date only when not connected
+  expect(shown(rules, 'mx_Custom_4', r1)).toBe(false);
+  expect(shown(rules, 'ActivityEvent_Note', {})).toBe(true); // no rule names it: always shown
+});
+
+test('values a rule hides are not sent, and hidden required fields are not asked for', () => {
+  const ruled = {
+    ...form,
+    rules: [{ when: { mx_Custom_1: 'Yes' }, show: ['mx_Custom_20'] }],
+    fields: form.fields.map(f => (f.schema === 'mx_Custom_20' ? { ...f, required: true } : f)),
+  };
+  expect(toLsqFields(ruled, { mx_Custom_1: 'No', mx_Custom_20: '2024' }).fields.map(f => f.SchemaName)).toEqual(['mx_Custom_1']);
+  expect(() => toLsqFields(ruled, { mx_Custom_1: 'Yes' })).toThrow('Qualification Completion Year is required');
 });
 
 test('unanswered calls get the placeholder for a mandatory field; connected calls and a real choice do not', () => {
