@@ -2,10 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
+import SettingsScreen from './SettingsScreen';
 import RecordingsScreen from './RecordingsScreen';
 import SetupScreen from './SetupScreen';
 import Dialer from './modules/dialer';
 import { api, OFFLINE } from './lib/api';
+import { cached, remember } from './lib/cache';
+import { enqueue, flush, onOutboxProblem, waitingLeads } from './lib/outbox';
+import { loadPrefs } from './lib/prefs';
 import { syncRecordings, syncRecordingsSoon } from './lib/recordings';
 import { supabase } from './lib/supabase';
 import { Btn, card, colors, Skeleton, Toast, wordmark } from './ui';
@@ -83,6 +87,8 @@ const pretty = (phone) => dialable(phone).replace(/^(\+91)?(\d{5})(\d{5})$/, (_,
  */
 export default function DialerScreen({ me }) {
   const [recordingsOpen, setRecordingsOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(null); // null | 'menu' | 'chooseSim' (first call on a dual-SIM phone)
+  const simAskedRef = useRef(false);
   const [keyOpen, setKeyOpen] = useState(false); // update-your-key screen, on top so a marked activity isn't lost
   const [granted, setGranted] = useState(false);
   const [canFront, setCanFront] = useState(true);
@@ -127,6 +133,9 @@ export default function DialerScreen({ me }) {
 
   useEffect(() => {
     loadForm();
+    // The last queue shows at once (leads already called are filtered by the server's reload and the outbox).
+    const lastQueue = cached(`queue-${me.email}`);
+    if (lastQueue) { queueRef.current = lastQueue; pending(); }
     PermissionsAndroid.requestMultiple(PERMISSIONS).then((res) => {
       const ok = PERMISSIONS.every((p) => res[p] === PermissionsAndroid.RESULTS.GRANTED);
       setGranted(ok);
@@ -156,9 +165,19 @@ export default function DialerScreen({ me }) {
       if (incomingRef.current) checkCallback();
       setFilesAccess(Dialer.hasAllFilesAccess());
       syncRecordings();
+      flush();
     });
     syncRecordings();
+    // Saves go out in the background; a problem shows here, and clears once they're all sent.
+    let shown = null;
+    onOutboxProblem((msg, code) => {
+      if (msg) { shown = msg; setError(msg); } else setError((e) => (e === shown ? null : e));
+      if (code === 'lsq_key_rejected') setKeyOpen(true);
+    });
+    flush();
+    const retry = setInterval(flush, 30000);
     return () => {
+      clearInterval(retry);
       callSub.remove();
       appSub.remove();
       Dialer.stopCallStateListener();
@@ -211,18 +230,21 @@ export default function DialerScreen({ me }) {
     return () => clearInterval(t);
   }, [phase]);
 
+  // The last form opens at once; the server's copy replaces it when it arrives.
   function loadForm() {
-    setFormState('loading');
+    const last = cached(`form-${me.email}-${me.mode}`);
+    if (last) { setForm(last); setFormState('ready'); } else setFormState('loading');
     api('/api/activity-form')
-      .then((r) => { setForm(r.form); setFormState(r.form ? 'ready' : 'failed'); })
-      .catch(() => setFormState('failed'));
+      .then((r) => { setForm(r.form); setFormState(r.form ? 'ready' : 'failed'); if (r.form) remember(`form-${me.email}-${me.mode}`, r.form); })
+      .catch(() => { if (!last) setFormState('failed'); });
   }
 
   // The queue as last loaded, minus the leads handled since. Moving to the next lead uses this list
   // straight away; the server reload runs in the background (it only adds a TL's new pushes).
   function pending() {
     const { leads, rule, source } = queueRef.current;
-    const left = leads.filter((l) => !handledRef.current.has(l.prospectId));
+    const waiting = waitingLeads(); // saved on the phone, not yet on the server
+    const left = leads.filter((l) => !handledRef.current.has(l.prospectId) && !waiting.has(l.prospectId));
     setQueueInfo({ count: left.length, source, rule, leads: left });
     return left;
   }
@@ -231,6 +253,7 @@ export default function DialerScreen({ me }) {
   async function loadQueue(skipCache = false) {
     const q = await api(skipCache ? '/api/queue?fresh=1' : '/api/queue');
     queueRef.current = { leads: q.leads, rule: q.rule, source: q.source };
+    remember(`queue-${me.email}`, queueRef.current);
     return pending();
   }
 
@@ -293,10 +316,21 @@ export default function DialerScreen({ me }) {
   }
 
   function dial() {
+    const prefs = loadPrefs();
+    let sims = [];
+    try { sims = Dialer.listSims(); } catch {}
+    // Dual SIM and none chosen: ask once, holding the countdown; closing Settings dials.
+    if (sims.length > 1 && !sims.some((s) => s.id === prefs.simId) && !simAskedRef.current) {
+      simAskedRef.current = true;
+      setHeld(true);
+      setPrefsOpen('chooseSim');
+      return;
+    }
     callRef.current = { lead, since: Date.now() - 2000, startedAt: new Date().toISOString(), sawOffhook: false, finishing: false };
     setPhase('calling');
     try {
-      Dialer.placeCall(dialable(lead.phone));
+      Dialer.placeCall(dialable(lead.phone), sims.some((s) => s.id === prefs.simId) ? prefs.simId : null);
+      if (prefs.autoLaptop) api(`/api/lead/${encodeURIComponent(lead.prospectId)}/open-on-laptop`, { method: 'POST' }).catch(() => {});
     } catch (e) {
       setError(`Could not place the call: ${e.message}`);
       callRef.current = null;
@@ -314,9 +348,10 @@ export default function DialerScreen({ me }) {
     if (call.finishing) return;
     call.finishing = true;
     let row = null;
-    for (let i = 0; !row && i < (call.ended ? 8 : 2); i++) {
+    // Checked every 250 ms: the form shows as soon as Android has written the call (up to 8 s once it ended).
+    for (let i = 0; !row && i < (call.ended ? 32 : 8); i++) {
       row = await Dialer.lastOutgoingCall(call.since);
-      if (!row) await sleep(1000);
+      if (!row) await sleep(250);
     }
     if (!row && !call.ended) { call.finishing = false; return; } // still on the call
     const seconds = row ? row.durationSec : 0;
@@ -355,6 +390,11 @@ export default function DialerScreen({ me }) {
     Dialer.bringToFront();
   }
 
+  function closePrefs() {
+    if (prefsOpen === 'chooseSim') setHeld(false); // the countdown is at 0, so this dials
+    setPrefsOpen(null);
+  }
+
   // Opens this lead in LSQ on the person's laptop, through the Chrome extension signed in as them.
   async function openOnLaptop() {
     try {
@@ -365,28 +405,15 @@ export default function DialerScreen({ me }) {
     }
   }
 
-  // Returns false when not saved; the call stays open so a marked activity can be sent again.
+  // Instant: the save goes into the phone's outbox and is sent in the background, retried until the backend takes it,
+  // so the next lead never waits on LeadSquared. Problems show through onOutboxProblem.
   async function save(outcome, seconds, activity) {
     const call = callRef.current;
     const { lead: l, startedAt } = call;
-    // Only clear the call this save was for: a skip saves in the background while the next lead is already up.
-    const done = () => { if (callRef.current === call) callRef.current = null; markHandled(l.prospectId); };
-    try {
-      await api('/api/disposition', {
-        method: 'POST',
-        body: { prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId, activity },
-      });
-      done();
-      setError(null);
-      return true;
-    } catch (e) {
-      // shortcut: a failed save is shown, not retried; step 6 adds an offline outbox.
-      setError(`Not saved: ${e.message}`);
-      if (e.code === 'lsq_key_rejected') setKeyOpen(true);
-      // A skip has nothing to lose, and the loop has moved on; the lead comes back on the next full load.
-      if (!activity) done();
-      return false;
-    }
+    if (callRef.current === call) callRef.current = null;
+    markHandled(l.prospectId);
+    enqueue({ prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId, activity });
+    return true;
   }
 
   // Send the marked activity, remember the sticky fields for the next call, move on.
@@ -396,10 +423,11 @@ export default function DialerScreen({ me }) {
     setSaving(true);
     const connected = vals[form.connected?.schema] !== 'No';
     const ok = await save(connected ? 'connected' : 'no_answer', talkSeconds, vals);
-    setSaving(false);
-    if (!ok) return;
+    if (!ok) { setSaving(false); return; }
     rememberSticky(form, vals);
     showToast(`${form.name} saved for ${lead.name || 'lead'}`);
+    await sleep(1000); // a moment to see it saved before the next lead comes up; Save stays disabled meanwhile
+    setSaving(false);
     if (returnTo) { setCallback(false); setLead(null); setPhase(returnTo); } else next();
   }
 
@@ -465,7 +493,16 @@ export default function DialerScreen({ me }) {
           me={me}
           keysOnly
           onCancel={() => setKeyOpen(false)}
-          onDone={() => { setKeyOpen(false); setError(null); showToast('LeadSquared key updated'); }}
+          onDone={() => { setKeyOpen(false); setError(null); showToast('LeadSquared key updated'); flush(); }}
+        />
+      </Modal>
+
+      <Modal visible={!!prefsOpen} animationType="slide" onRequestClose={closePrefs}>
+        <SettingsScreen
+          chooseSim={prefsOpen === 'chooseSim'}
+          onClose={closePrefs}
+          onRecordings={() => { closePrefs(); setRecordingsOpen(true); }}
+          onKey={() => { closePrefs(); setKeyOpen(true); }}
         />
       </Modal>
 
@@ -487,18 +524,10 @@ export default function DialerScreen({ me }) {
             <Pressable
               accessibilityRole="button"
               style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
-              onPress={() => { setMenuOpen(false); setKeyOpen(true); }}
+              onPress={() => { setMenuOpen(false); setPrefsOpen('menu'); }}
             >
-              <Ionicons name="key-outline" size={20} color={colors.text} />
-              <Text style={styles.menuText}>Update LeadSquared key</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
-              onPress={() => { setMenuOpen(false); setRecordingsOpen(true); }}
-            >
-              <Ionicons name="mic-outline" size={20} color={colors.text} />
-              <Text style={styles.menuText}>Call recordings</Text>
+              <Ionicons name="settings-outline" size={20} color={colors.text} />
+              <Text style={styles.menuText}>Settings</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"

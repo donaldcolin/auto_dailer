@@ -6,6 +6,7 @@ import DialerScreen from './DialerScreen';
 import LoginScreen from './LoginScreen';
 import SetupScreen from './SetupScreen';
 import { api } from './lib/api';
+import { cached, remember } from './lib/cache';
 import { supabase } from './lib/supabase';
 import { Btn, colors } from './ui';
 
@@ -31,12 +32,15 @@ export default function App() {
   }, []);
 
   const userId = session?.user.id;
+  // The last profile opens the dialer at once; the server's copy replaces it. Offline with a saved one, it still opens.
   function loadMe() {
     setMeError(null);
-    api('/api/me').then(setMe).catch((e) => setMeError(e.message));
+    api('/api/me')
+      .then((m) => { setMe(m); remember(`me-${userId}`, m); })
+      .catch((e) => setMe((cur) => { if (!cur) setMeError(e.message); return cur; }));
   }
   useEffect(() => {
-    setMe(null);
+    setMe(userId ? cached(`me-${userId}`) : null);
     if (userId) loadMe();
   }, [userId]);
 
@@ -53,7 +57,7 @@ export default function App() {
     );
   } else if (!me) screen = <View style={center}><ActivityIndicator /></View>;
   else if (!me.mode || !me.hasKey) screen = <SetupScreen me={me} onDone={loadMe} />;
-  else screen = <DialerScreen key={userId} me={me} />;
+  else screen = <DialerScreen key={`${userId}-${me.mode}`} me={me} />; // a mode change (from the saved profile) reloads the form
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>

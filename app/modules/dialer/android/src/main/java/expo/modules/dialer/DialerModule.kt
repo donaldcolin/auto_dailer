@@ -11,6 +11,9 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.CallLog
 import android.provider.Settings
+import android.telecom.PhoneAccountHandle
+import android.telecom.TelecomManager
+import android.telephony.SubscriptionManager
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
@@ -46,12 +49,22 @@ class DialerModule : Module() {
     Events("onCallState")
 
     // Goes through the system phone app, so the phone's auto-record and Callyzer see the call.
-    Function("placeCall") { number: String ->
+    // simId: the subscription chosen in Preferences; null, or a SIM no longer in the phone, dials as the phone decides.
+    Function("placeCall") { number: String, simId: Int? ->
       val intent = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      simId?.let { phoneAccountFor(it) }?.let { intent.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
       dialing = true
       sawOffhook = false
       context.startActivity(intent)
+    }
+
+    // The phone's active SIMs, for Preferences → Call from. No numbers: they need another permission and are often blank.
+    Function("listSims") {
+      val subs = context.getSystemService(SubscriptionManager::class.java)
+      (subs.activeSubscriptionInfoList ?: emptyList()).map {
+        mapOf("id" to it.subscriptionId, "slot" to it.simSlotIndex + 1, "name" to it.displayName?.toString().orEmpty(), "carrier" to it.carrierName?.toString().orEmpty())
+      }
     }
 
     // Android only lets a background app return to the front with "Display over other apps".
@@ -199,6 +212,13 @@ class DialerModule : Module() {
     legacyListener?.let { telephony.listen(it, PhoneStateListener.LISTEN_NONE) }
     callback = null
     legacyListener = null
+  }
+
+  private fun phoneAccountFor(subId: Int): PhoneAccountHandle? {
+    val telecom = context.getSystemService(TelecomManager::class.java)
+    return telecom.callCapablePhoneAccounts.firstOrNull { h ->
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) telephony.getSubscriptionId(h) == subId else h.id == subId.toString()
+    }
   }
 
   private fun bringToFront() {

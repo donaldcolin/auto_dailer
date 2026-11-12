@@ -7,6 +7,12 @@ import { card, colors } from './ui';
 // Options a dropdown offers right now: a dependent one follows its parent's value.
 export const optionsFor = (f, values) => (f.dependent ? f.dependent[values[f.parent]] || [] : f.options);
 
+// Same logic as `shown` in backend/services/activity.js: a field some rule names shows only while one of those rules matches.
+const shown = (rules, schema, values) => {
+  const own = (rules || []).filter((r) => r.show.includes(schema));
+  return !own.length || own.some((r) => Object.entries(r.when).every(([k, v]) => (v === true ? !!values[k] : values[k] === v)));
+};
+
 // Set one value; drop children whose value no longer fits the new parent.
 export function setValue(form, values, schema, value) {
   const next = { ...values, [schema]: value };
@@ -31,8 +37,11 @@ export default function ActivityForm({ form, values, onChange }) {
   const rows = useRef({});
   const set = (schema, v) => onChange(setValue(form, values, schema, v));
   // A dependent dropdown with nothing to offer (e.g. the failure reason on a connected call) is hidden.
-  const visible = (f) => !f.dependent || optionsFor(f, values).length > 0;
-  const sections = form.sections.map(([title, schemas]) => [title, schemas.map((s) => form.fields.find((f) => f.schema === s)).filter((f) => f && visible(f))]);
+  // A field the form's rules hide (another round's fields) is hidden too, as in LSQ's own form.
+  const visible = (f) => (!f.dependent || optionsFor(f, values).length > 0) && shown(form.rules, f.schema, values);
+  const sections = form.sections
+    .map(([title, schemas]) => [title, schemas.map((s) => form.fields.find((f) => f.schema === s)).filter((f) => f && visible(f))])
+    .filter(([, list]) => list.length);
   const placed = form.sections.flatMap(([, schemas]) => schemas);
   const rest = form.fields.filter((f) => !placed.includes(f.schema) && visible(f));
 
@@ -137,7 +146,7 @@ export default function ActivityForm({ form, values, onChange }) {
           {list.map(field)}
         </View>
       ))}
-      <View style={styles.section}>
+      {form.more !== false && rest.length > 0 && <View style={styles.section}>
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ expanded: more }}
@@ -149,7 +158,7 @@ export default function ActivityForm({ form, values, onChange }) {
           <Ionicons name={more ? 'chevron-up' : 'chevron-down'} size={20} color={colors.muted} />
         </Pressable>
         {more && rest.map(field)}
-      </View>
+      </View>}
     </ScrollView>
   );
 }

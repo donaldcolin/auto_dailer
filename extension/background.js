@@ -13,6 +13,7 @@ const db = supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey, {
   auth: { storage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
 });
 let channel = null;
+let signingIn = null;
 
 // One at a time, so a row from Realtime and the same row from the catch-up never open two tabs.
 let opening = Promise.resolve();
@@ -61,7 +62,8 @@ async function signIn() {
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const run = {
     status: async () => ({ email: (await db.auth.getSession()).data.session?.user.email || null }),
-    signIn: async () => { await signIn(); return {}; },
+    // The popup closes when Google's window opens; a second click joins the open sign-in instead of starting another.
+    signIn: async () => { signingIn ||= signIn().finally(() => { signingIn = null; }); await signingIn; return {}; },
     signOut: async () => { await db.auth.signOut(); await connect(); return {}; },
   }[msg.type];
   if (!run) return false;

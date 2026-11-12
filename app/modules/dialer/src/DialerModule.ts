@@ -3,7 +3,8 @@ import { NativeModule, requireNativeModule } from 'expo';
 import { DialerModuleEvents, OutgoingCall } from './Dialer.types';
 
 declare class DialerModule extends NativeModule<DialerModuleEvents> {
-  placeCall(number: string): void;
+  placeCall(number: string, simId: number | null): void;
+  listSims(): { id: number; slot: number; name: string; carrier: string }[];
   startCallStateListener(): void;
   stopCallStateListener(): void;
   lastOutgoingCall(sinceMs: number): Promise<OutgoingCall | null>;
