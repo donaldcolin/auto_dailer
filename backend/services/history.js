@@ -38,7 +38,7 @@ function formSummary(fields, form) {
 
 /**
  * A lead's latest LSQ activities, newest first, for the call screen: { at, kind, what, detail, note }.
- * kind: 'spoke' | 'missed' | 'other'. A marked HR/BDA activity and Callyzer's log of the same call become one line:
+ * what: the activity's name (the heading); detail: the outcome. kind: 'spoke' | 'missed' | 'other'. A marked HR/BDA activity and Callyzer's log of the same call become one line:
  * "Spoke 2m 4s" with the form's outcome, or just the reason it didn't connect ("Did not pick").
  */
 async function leadHistory(leadId, limit = 6, now = Date.now()) {
@@ -88,16 +88,16 @@ async function leadHistory(leadId, limit = 6, now = Date.now()) {
       const fields = a.ActivityFields || {};
       const note = fields.ActivityEvent_Note || '';
       if (form.connected && fields[form.connected.schema] === 'No') {
-        out.push({ at, kind: 'missed', what: fields[form.connected.reason] || 'Did not pick', detail: '', note });
+        out.push({ at, kind: 'missed', what: a.EventName, detail: fields[form.connected.reason] || 'Did not pick', note });
       } else {
         const sec = talk.get(String(a.CreatedOn).replace(' ', 'T').slice(0, 19)) || pair.get(a)?.sec;
-        out.push({ at, kind: 'spoke', what: sec ? spoke(sec) : 'Connected', detail: formSummary(fields, form), note });
+        out.push({ at, kind: 'spoke', what: a.EventName, detail: [sec ? spoke(sec) : 'Connected', formSummary(fields, form)].filter(Boolean).join(' · '), note });
       }
     } else if (PHONE_CALLS.has(a.EventCode)) {
       const sec = Number(data_(a).Duration) || 0;
       out.push(sec > 0
-        ? { at, kind: 'spoke', what: spoke(sec), detail: a.EventCode === 21 ? 'They called' : 'You called', note: '' }
-        : { at, kind: 'missed', what: a.EventCode === 21 ? 'Missed their call' : 'Did not pick', detail: '', note: '' });
+        ? { at, kind: 'spoke', what: a.EventCode === 21 ? 'Incoming call' : 'Outgoing call', detail: spoke(sec), note: '' }
+        : { at, kind: 'missed', what: a.EventCode === 21 ? 'Incoming call' : 'Outgoing call', detail: a.EventCode === 21 ? 'Missed their call' : 'Did not pick', note: '' });
     } else if (a.EventCode === 3002) {
       const d = data_(a);
       out.push({ at, kind: 'other', what: 'Stage changed', detail: [d.PreviousStage, d.CurrentStage].filter(Boolean).join(' → '), note: '' });

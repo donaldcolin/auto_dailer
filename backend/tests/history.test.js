@@ -37,12 +37,12 @@ test('history: one line per call, the reason when it did not connect, time spoke
   const h = await leadHistory('lead1', 6, Date.parse('2026-10-29T12:00:00Z'));
   expect(mockPost.mock.calls[0][0]).toContain('leadId=lead1');
   expect(h.map(x => [x.kind, x.what])).toEqual([
-    ['spoke', 'Spoke 2m 4s'], ['missed', 'Busy in another call'], ['spoke', 'Spoke 40s'], ['other', 'Stage changed'],
+    ['spoke', 'HR Activity'], ['missed', 'HR Activity'], ['spoke', 'Incoming call'], ['other', 'Stage changed'],
   ]);
   expect(h[0]).toMatchObject({ note: 'call after 5', at: 'Today, 1:44 pm' });
-  expect(h[0].detail).toMatch(/^Screening Round · JD Sent · Follow up 5 Nov/);
-  expect(h[1]).toMatchObject({ detail: '', at: 'Yesterday, 11:30 am' });
-  expect(h[2].detail).toBe('They called');
+  expect(h[0].detail).toMatch(/^Spoke 2m 4s · Screening Round · JD Sent · Follow up 5 Nov/);
+  expect(h[1]).toMatchObject({ detail: 'Busy in another call', at: 'Yesterday, 11:30 am' });
+  expect(h[2].detail).toBe('Spoke 40s');
   expect(h[3].detail).toBe('New → Screening');
 });
 
@@ -51,6 +51,6 @@ test('talk time comes from the dialer\'s own record first, and a save posted twi
   mockPost.mockResolvedValue({ data: { ProspectActivities: [marked, { ...marked }] } });
   mockDials.data = [{ started_at: '2026-11-10T14:48:08.064+00:00', talk_seconds: 11 }];
   const h = await leadHistory('lead1');
-  expect(h.map(x => x.what)).toEqual(['Spoke 11s']);
+  expect(h.map(x => x.detail)).toEqual(['Spoke 11s · Screening Round']);
   mockDials.data = [];
 });
