@@ -109,6 +109,13 @@ async function readLeadsByIds(ids) {
   return leads;
 }
 
+// Leads with this phone number (10 digits), for an incoming call. A number rings for several seconds and may call again,
+// so the answer is kept 10 minutes.
+const leadsByPhone = digits => cached(`phone:${digits}`, async () => {
+  const { data } = await lsqClient.get(`${lsqUrl('LeadManagement.svc/RetrieveLeadByPhoneNumber')}&phone=${encodeURIComponent(digits)}`);
+  return (Array.isArray(data) ? data : []).map(toLead);
+}, 10 * 60 * 1000);
+
 // One LSQ read every few minutes per key; concurrent callers share it.
 function cached(key, load, ttl = LIST_CACHE_MS, now = Date.now()) {
   const hit = _cache.get(key);
@@ -189,4 +196,4 @@ async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
   };
 }
 
-module.exports = { details, istTime, readLeadsByIds, getQueue, getListLeads, getOwnedLeads, ownQueue, readList };
+module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, getListLeads, getOwnedLeads, ownQueue, readList };

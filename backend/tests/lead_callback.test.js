@@ -10,7 +10,7 @@ jest.mock('../config/supabase', () => {
 });
 jest.mock('../services/profile', () => ({ getProfile: jest.fn() }));
 jest.mock('../services/team', () => ({ withTeamLead: async p => ({ ...p, tlGroups: [] }) }));
-jest.mock('../services/queue', () => ({ readLeadsByIds: jest.fn() }));
+jest.mock('../services/queue', () => ({ readLeadsByIds: jest.fn(), leadsByPhone: jest.fn() }));
 const request = require('supertest');
 const supabase = require('../config/supabase');
 const { getProfile } = require('../services/profile');
@@ -59,4 +59,43 @@ test('open-on-laptop stores a request for the caller only', async () => {
 test('istMidnight: IST day boundaries', () => {
   expect(istMidnight(new Date('2026-11-10T20:00:00Z')).toISOString()).toBe('2026-11-10T18:30:00.000Z'); // 01:30 IST on the 11th
   expect(istMidnight(new Date('2026-11-10T18:00:00Z')).toISOString()).toBe('2026-11-09T18:30:00.000Z'); // 23:30 IST on the 10th
+});
+
+describe('identify: any of the person\'s leads calling in', () => {
+  const ask = async (phone, profile = {}) => {
+    clearAuthCache();
+    supabase.auth.getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'a@kalvium.com' } }, error: null });
+    getProfile.mockResolvedValue({ id: 'u1', email: 'a@kalvium.com', lsq_user_id: 'L1', access: 'associate', groups: [], mode: 'hr', ...profile });
+    return request(app).post('/api/lead/identify').send({ phone }).set('Authorization', `Bearer id-${n++}`);
+  };
+  beforeEach(() => { queue.leadsByPhone.mockReset(); queue.readLeadsByIds.mockReset(); });
+
+  test('dialed today without connecting: that lead, marked as a callback, without an LSQ phone search', async () => {
+    mockRows.attempts = [{ prospect_id: 'p1', phone: '+91-9876543210', outcome: 'no_answer' }];
+    queue.readLeadsByIds.mockResolvedValue([lead]);
+    expect((await ask('09876543210')).body).toEqual({ lead, calledBack: true });
+    expect(queue.leadsByPhone).not.toHaveBeenCalled();
+  });
+
+  test('not dialed today: found by phone in LSQ, preferring the lead this person owns', async () => {
+    mockRows.attempts = [];
+    const other = { ...lead, prospectId: 'p2', ownerId: 'L9' };
+    queue.leadsByPhone.mockResolvedValue([other, lead]);
+    expect((await ask('9876543210')).body).toEqual({ lead, calledBack: false });
+  });
+
+  test('a number that is someone else\'s lead, or no lead, or not a phone: nothing', async () => {
+    mockRows.attempts = [];
+    queue.leadsByPhone.mockResolvedValue([{ ...lead, ownerId: 'L9' }]);
+    expect((await ask('9876543210')).body).toEqual({ lead: null });
+    queue.leadsByPhone.mockResolvedValue([]);
+    expect((await ask('9876543210')).body).toEqual({ lead: null });
+    expect((await ask('12345')).body).toEqual({ lead: null });
+  });
+
+  test('a TL is told about a lead someone else owns', async () => {
+    mockRows.attempts = [];
+    queue.leadsByPhone.mockResolvedValue([{ ...lead, ownerId: 'L9' }]);
+    expect((await ask('9876543210', { access: 'tl' })).body.lead.prospectId).toBe('p1');
+  });
 });

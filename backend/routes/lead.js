@@ -29,6 +29,36 @@ const istMidnight = (now = new Date()) => {
   return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()) - 330 * 60000);
 };
 
+// A number calling this person's business SIM: which of their leads is it? During the call the app names the lead, and
+// when it ends it opens that lead's form. Today's dials are checked first (no LSQ call), then LSQ by phone number.
+// `calledBack`: this person dialed it today without getting through.
+router.post('/identify', requireAuth, async (req, res) => {
+  const digits = last10(req.body?.phone); // in the body, not the URL, so numbers stay out of request logs
+  if (digits.length !== 10) return res.json({ lead: null });
+  const { data, error } = await supabase.from('dial_attempts')
+    .select('prospect_id, phone, outcome')
+    .eq('user_id', req.profile.id)
+    .gte('started_at', istMidnight().toISOString())
+    .neq('outcome', 'skipped')
+    .order('started_at', { ascending: false });
+  if (error) throw error;
+  const latest = data.find(a => last10(a.phone) === digits);
+  const own = l => l && (req.profile.access !== 'associate' || l.ownerId === req.profile.lsq_user_id);
+  try {
+    let lead = latest && (await queue.readLeadsByIds([latest.prospect_id]))[0];
+    if (!own(lead)) {
+      const found = await queue.leadsByPhone(digits);
+      lead = found.find(l => l.ownerId === req.profile.lsq_user_id) || found.find(own);
+    }
+    if (!own(lead)) return res.json({ lead: null });
+    res.json({ lead, calledBack: latest?.prospect_id === lead.prospectId && latest.outcome === 'no_answer' });
+  } catch (err) {
+    console.error('[identify]', err.response?.status, err.response?.data?.ExceptionMessage || err.message);
+    res.status(502).json({ error: 'Could not look up this number' });
+  }
+});
+
+// v4 apps: kept until every phone runs v5, which uses /identify.
 // A number that just called in: is it a lead this person called today without getting through? Then the app
 // shows that lead's form. The latest dial to the number decides: once it connected, a callback is a normal call.
 router.post('/callback', requireAuth, async (req, res) => {
