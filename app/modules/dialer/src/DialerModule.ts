@@ -16,7 +16,8 @@ declare class DialerModule extends NativeModule<DialerModuleEvents> {
   copyNewRecordings(folder: string, sinceMs: number, done: string[]): Promise<string[]>;
   canBringToFront(): boolean;
   openBringToFrontSettings(): void;
-  startKeepAlive(): void;
+  startKeepAlive(light: boolean): void;
+  startIncomingListener(simId: number | null): void;
   stopKeepAlive(): void;
 }
 

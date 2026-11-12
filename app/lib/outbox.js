@@ -26,8 +26,6 @@ export function enqueue(body) {
 }
 
 // Sends waiting saves in order. Stops at the first one that can't go yet and keeps it for the next try.
-// shortcut: if LSQ saved an activity but the reply was lost (network drop), the retry posts it twice;
-// add a client id the backend dedupes on if that shows up in LSQ.
 export function flush() {
   if (sending) return sending;
   sending = (async () => {
@@ -35,11 +33,13 @@ export function flush() {
       const [item] = load();
       if (!item) { report(null); return; }
       try {
-        await api('/api/disposition', { method: 'POST', body: item.body });
+        // retry: the backend first checks LSQ for this save, in case it went through and only the reply was lost.
+        await api('/api/disposition', { method: 'POST', body: item.tried ? { ...item.body, retry: true } : item.body });
       } catch (e) {
         // 4xx other than a refused key: the backend will never take it, so drop it and say so.
         const permanent = e.status >= 400 && e.status < 500 && e.code !== 'lsq_key_rejected';
         if (!permanent) {
+          store(load().map((i) => (i.id === item.id ? { ...i, tried: true } : i)));
           const left = load().length;
           report(`${e.message} ${left} ${left === 1 ? 'save is' : 'saves are'} waiting and will be sent again.`, e.code);
           return;

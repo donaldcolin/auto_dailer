@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 
 // Runs while the dialer loop is going, so Android doesn't kill or freeze the app across a 150-dial day.
+// "light" (dialer stopped): no wake lock, only kept alive so a lead calling in still opens its form.
 // The ongoing notification is what Android requires for that; tapping it opens the dialer.
 class KeepAliveService : Service() {
   private var wakeLock: PowerManager.WakeLock? = null
@@ -23,9 +24,10 @@ class KeepAliveService : Service() {
     nm.createNotificationChannel(NotificationChannel(CHANNEL, "Dialing", NotificationManager.IMPORTANCE_LOW))
     val open = packageManager.getLaunchIntentForPackage(packageName)
       ?.let { PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE) }
+    val light = intent?.getBooleanExtra("light", false) == true
     val notification = Notification.Builder(this, CHANNEL)
-      .setContentTitle("Dialer is running")
-      .setContentText("Calling your leads. Tap to open.")
+      .setContentTitle(if (light) "Dialer is on" else "Dialer is running")
+      .setContentText(if (light) "Calls from your leads open the form." else "Calling your leads. Tap to open.")
       .setSmallIcon(android.R.drawable.stat_sys_phone_call)
       .setOngoing(true)
       .setContentIntent(open)
@@ -36,7 +38,10 @@ class KeepAliveService : Service() {
       startForeground(1, notification)
     }
     // Keeps the countdown and call-log checks running with the screen off; 12 h cap in case stop is never called.
-    if (wakeLock == null) {
+    if (light) {
+      wakeLock?.let { if (it.isHeld) it.release() }
+      wakeLock = null
+    } else if (wakeLock == null) {
       wakeLock = getSystemService(PowerManager::class.java)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dialer:loop")
         .apply { acquire(12 * 60 * 60 * 1000L) }

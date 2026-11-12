@@ -36,6 +36,11 @@ class DialerModule : Module() {
   private var legacyListener: PhoneStateListener? = null // Android 10–11
   private var dialing = false // a call we placed is in progress
   private var sawOffhook = false
+  // Calls coming in on the business SIM (Settings → Call from): which lead it is shows during the call, its form after.
+  private var incomingListener: PhoneStateListener? = null
+  private var incomingTm: TelephonyManager? = null
+  private var inRinging = false
+  private var inAnswered = false
 
   private val context: Context
     get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
@@ -46,7 +51,7 @@ class DialerModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("Dialer")
 
-    Events("onCallState")
+    Events("onCallState", "onIncoming")
 
     // Goes through the system phone app, so the phone's auto-record and Callyzer see the call.
     // simId: the subscription chosen in Preferences; null, or a SIM no longer in the phone, dials as the phone decides.
@@ -104,8 +109,33 @@ class DialerModule : Module() {
 
     Function("stopCallStateListener") { stopListening() }
 
-    // Foreground service + wake lock while dialing (KeepAliveService); stop it when the loop stops.
-    Function("startKeepAlive") { context.startForegroundService(Intent(context, KeepAliveService::class.java)); Unit }
+    // Listens on one SIM only (null: the phone's default) for calls coming in, with the caller's number.
+    // PhoneStateListener, because TelephonyCallback never gives the number; it needs READ_CALL_LOG, which we have.
+    Function("startIncomingListener") { simId: Int? ->
+      Handler(Looper.getMainLooper()).post {
+        stopIncoming()
+        val tm = simId?.let { runCatching { telephony.createForSubscriptionId(it) }.getOrNull() } ?: telephony
+        @Suppress("DEPRECATION")
+        val l = object : PhoneStateListener() {
+          @Deprecated("Deprecated in Android 12, still the only way to get the number")
+          override fun onCallStateChanged(state: Int, phoneNumber: String?) = onIncomingState(state, phoneNumber)
+        }
+        try {
+          @Suppress("DEPRECATION")
+          tm.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
+          incomingListener = l
+          incomingTm = tm
+        } catch (e: Exception) {
+          // No permission or the SIM went away: callbacks fall back to the call-log check when the app opens.
+        }
+      }
+      null
+    }
+
+    // Foreground service while dialing (with a wake lock) and, light, while the dialer waits for callbacks.
+    Function("startKeepAlive") { light: Boolean ->
+      context.startForegroundService(Intent(context, KeepAliveService::class.java).putExtra("light", light)); Unit
+    }
     Function("stopKeepAlive") { context.stopService(Intent(context, KeepAliveService::class.java)); Unit }
 
     // Newest outgoing call since sinceMs. Talk time > 0 means the other side answered.
@@ -193,7 +223,7 @@ class DialerModule : Module() {
   private fun lastCall(types: IntArray, sinceMs: Double): Map<String, Any>? =
     context.contentResolver.query(
       CallLog.Calls.CONTENT_URI,
-      arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.DURATION, CallLog.Calls.DATE),
+      arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.DURATION, CallLog.Calls.DATE, CallLog.Calls.PHONE_ACCOUNT_ID),
       "${CallLog.Calls.TYPE} IN (${types.joinToString { "?" }}) AND ${CallLog.Calls.DATE} >= ?",
       (types.map { it.toString() } + sinceMs.toLong().toString()).toTypedArray(),
       "${CallLog.Calls.DATE} DESC"
@@ -202,11 +232,43 @@ class DialerModule : Module() {
       mapOf(
         "number" to (c.getString(0) ?: ""),
         "durationSec" to c.getLong(1),
-        "date" to c.getLong(2).toDouble()
+        "date" to c.getLong(2).toDouble(),
+        "account" to (c.getString(3) ?: "") // the SIM; on most phones its subscription id
       )
     }
 
+  // Not our own dial: RINGING (with the number) → OFFHOOK when answered → IDLE. Answered calls bring the dialer
+  // to the front natively, since JS may be paused while the phone app is on top.
+  private fun onIncomingState(state: Int, number: String?) {
+    when (state) {
+      TelephonyManager.CALL_STATE_RINGING -> if (!dialing && !inRinging) {
+        inRinging = true
+        inAnswered = false
+        sendEvent("onIncoming", mapOf("state" to "RINGING", "number" to (number ?: "")))
+      }
+      TelephonyManager.CALL_STATE_OFFHOOK -> if (inRinging && !inAnswered) {
+        inAnswered = true
+        sendEvent("onIncoming", mapOf("state" to "OFFHOOK"))
+      }
+      else -> if (inRinging) {
+        val answered = inAnswered
+        inRinging = false
+        inAnswered = false
+        if (answered) bringToFront()
+        sendEvent("onIncoming", mapOf("state" to "IDLE", "answered" to answered))
+      }
+    }
+  }
+
+  private fun stopIncoming() {
+    @Suppress("DEPRECATION")
+    incomingListener?.let { incomingTm?.listen(it, PhoneStateListener.LISTEN_NONE) }
+    incomingListener = null
+    incomingTm = null
+  }
+
   private fun stopListening() {
+    stopIncoming()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callback?.let { telephony.unregisterTelephonyCallback(it) }
     @Suppress("DEPRECATION")
     legacyListener?.let { telephony.listen(it, PhoneStateListener.LISTEN_NONE) }

@@ -57,19 +57,22 @@ function LeadHistory({ history, compact }) {
       {history.failed && <Text style={styles.historySub}>Couldn't load past activity.</Text>}
       {!history.failed && !history.items && <Skeleton style={{ height: 14, width: '70%', marginVertical: 6 }} />}
       {history.items && !history.items.length && <Text style={styles.historySub}>No earlier activity.</Text>}
-      {items.map((h, i) => (
-        <View key={i} style={[styles.historyRow, compact && { paddingVertical: 2 }]}>
-          <View style={styles.historyHead}>
-            <Text style={[styles.historyWhat, compact && styles.detailSmall]} numberOfLines={1}>{h.what}</Text>
-            <Text style={[styles.historyAt, compact && styles.detailSmall]}>{h.at}</Text>
+      {items.map((h, i) => {
+        // One line per call: spoke (with how long), didn't connect (why), or something else that happened.
+        const icon = { spoke: 'call', missed: 'call-outline' }[h.kind] || 'ellipse-outline';
+        const tint = h.kind === 'missed' ? colors.muted : colors.text;
+        return (
+          <View key={i} style={[styles.historyRow, compact && { paddingVertical: 2 }, i === items.length - 1 && { borderBottomWidth: 0 }]}>
+            <View style={styles.historyHead}>
+              {!compact && <Ionicons name={icon} size={16} color={tint} style={styles.historyIcon} />}
+              <Text style={[styles.historyWhat, compact && styles.detailSmall]} numberOfLines={1}>{h.what}</Text>
+              <Text style={[styles.historyAt, compact && styles.detailSmall]}>{h.at}</Text>
+            </View>
+            {!!h.detail && <Text style={[styles.historySub, !compact && styles.historyIndent, compact && styles.detailSmall]} numberOfLines={compact ? 1 : 2}>{h.detail}</Text>}
+            {!!h.note && !compact && <Text style={[styles.historyNote, styles.historyIndent]} numberOfLines={3}>{h.note}</Text>}
           </View>
-          {!!(h.detail || h.note) && (
-            <Text style={[styles.historySub, compact && styles.detailSmall]} numberOfLines={compact ? 1 : 3}>
-              {[h.detail, h.note && `"${h.note}"`].filter(Boolean).join('. ')}
-            </Text>
-          )}
-        </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -104,7 +107,8 @@ export default function DialerScreen({ me }) {
   const countdownBar = useRef(new Animated.Value(1)).current;
   const [leadOpen, setLeadOpen] = useState(false); // marking: the form gets the room unless the caller opens the lead
   const [talkSeconds, setTalkSeconds] = useState(0);
-  const [callback, setCallback] = useState(false); // marking a lead who called back after a missed call
+  const [callback, setCallback] = useState(null); // marking a lead who called in: 'Called you' | 'Called you back'
+  const [incomingLead, setIncomingLead] = useState(null); // the lead on an incoming call, named while it lasts
   const [toast, setToast] = useState(null); // "HR Activity saved for Akhila", shown for a moment after each save
   const toastTimer = useRef(null);
   const [error, setError] = useState(null);
@@ -128,7 +132,8 @@ export default function DialerScreen({ me }) {
   const formRef = useRef(null);
   const queueRef = useRef({ leads: [], rule: null, source: null });
   const handledRef = useRef(new Set()); // prospect ids saved or skipped since the last Start
-  const incomingRef = useRef(null); // { since }: a call rang in; checked against today's missed leads once it ends
+  const incomingRef = useRef(null); // { since, lookup }: a call ringing in on the business SIM
+  const pendingIncomingRef = useRef(null); // a lead's answered call that waits for the counsellor to finish marking
   formRef.current = form;
 
   useEffect(() => {
@@ -139,16 +144,29 @@ export default function DialerScreen({ me }) {
     PermissionsAndroid.requestMultiple(PERMISSIONS).then((res) => {
       const ok = PERMISSIONS.every((p) => res[p] === PermissionsAndroid.RESULTS.GRANTED);
       setGranted(ok);
-      if (ok) Dialer.startCallStateListener();
+      if (ok) { Dialer.startCallStateListener(); listenIncoming(); }
     });
     loadQueue().catch((e) => setError(e.message));
 
-    const callSub = Dialer.addListener('onCallState', ({ state }) => {
-      if (state === 'RINGING' && phaseRef.current !== 'calling') {
-        incomingRef.current = { since: Date.now() - 2000 };
+    // A call ringing in on the business SIM: named during the call if it's one of the person's leads, its form after.
+    const inSub = Dialer.addListener('onIncoming', ({ state, number, answered }) => {
+      if (state === 'RINGING') {
         if (phaseRef.current === 'countdown') pause(); // never dial while a call rings in
+        const ring = { since: Date.now() - 2000 };
+        ring.lookup = flush().then(() => identify(number)).then((found) => {
+          if (incomingRef.current === ring && found) setIncomingLead(found.lead);
+          return found;
+        });
+        incomingRef.current = ring;
       }
-      if (state === 'IDLE' && incomingRef.current) checkCallback();
+      if (state === 'IDLE') {
+        const ring = incomingRef.current;
+        incomingRef.current = null;
+        setIncomingLead(null);
+        if (ring && answered) incomingEnded(ring);
+      }
+    });
+    const callSub = Dialer.addListener('onCallState', ({ state }) => {
       if (state === 'IDLE') syncRecordingsSoon(); // any call that just ended: its recording goes to Callyzer's folder
       const call = callRef.current;
       if (!call || phaseRef.current !== 'calling') return;
@@ -162,7 +180,7 @@ export default function DialerScreen({ me }) {
       if (s !== 'active') return;
       setCanFront(Dialer.canBringToFront()); // re-check after returning from Settings
       if (phaseRef.current === 'calling') finishCall(false);
-      if (incomingRef.current) checkCallback();
+      catchUpIncoming();
       setFilesAccess(Dialer.hasAllFilesAccess());
       syncRecordings();
       flush();
@@ -175,9 +193,11 @@ export default function DialerScreen({ me }) {
       if (code === 'lsq_key_rejected') setKeyOpen(true);
     });
     flush();
+    catchUpIncoming();
     const retry = setInterval(flush, 30000);
     return () => {
       clearInterval(retry);
+      inSub.remove();
       callSub.remove();
       appSub.remove();
       Dialer.stopCallStateListener();
@@ -218,8 +238,7 @@ export default function DialerScreen({ me }) {
   // Foreground service while the loop runs, so Android doesn't freeze or kill it between calls.
   const looping = !['idle', 'done', 'paused'].includes(phase);
   useEffect(() => {
-    if (looping) Dialer.startKeepAlive();
-    else Dialer.stopKeepAlive();
+    Dialer.startKeepAlive(!looping); // light while stopped, so a lead calling in still opens its form
   }, [looping]);
   useEffect(() => () => Dialer.stopKeepAlive(), []);
 
@@ -290,6 +309,8 @@ export default function DialerScreen({ me }) {
   }
 
   async function next(fresh = false) {
+    const waiting = pendingIncomingRef.current; // a lead's call answered while another was being marked: that form first
+    if (waiting) { pendingIncomingRef.current = null; openIncoming(waiting, 'next'); return; }
     if (pausedRef.current) { setPhase('paused'); return; }
     setError(null);
     let left = pending();
@@ -306,7 +327,7 @@ export default function DialerScreen({ me }) {
       loadQueue().catch(() => {});
     }
     if (!left.length) { setLead(null); setPhase('done'); return; }
-    setCallback(false);
+    setCallback(null);
     setLead({ ...left[0], ruleId: queueRef.current.rule?.id || null });
     setCountdown(COUNTDOWN_SEC);
     setHeld(false);
@@ -361,38 +382,75 @@ export default function DialerScreen({ me }) {
     setPhase(seconds > 0 ? 'outcome' : 'reason');
   }
 
-  // A lead missed today called back and the counsellor picked up: once that call ends, show the lead's form.
-  // Only while the dialer is open, and never over a call being marked.
-  async function checkCallback() {
-    const ring = incomingRef.current;
-    if (!ring || ring.checking) return;
-    ring.checking = true;
+  // The business SIM from Settings (null: the phone's default), so calls on the personal SIM are left alone.
+  function listenIncoming() {
+    const { simId } = loadPrefs();
+    try { Dialer.startIncomingListener(simId ?? null); } catch {}
+  }
+
+  // Which of this person's leads a number is: { lead, calledBack } or null.
+  const identify = (number) => (number
+    ? api('/api/lead/identify', { method: 'POST', body: { phone: number } }).then((r) => (r.lead ? r : null)).catch(() => null)
+    : Promise.resolve(null));
+
+  // An answered incoming call ended: its duration from the call log, then the lead's form.
+  async function incomingEnded(ring) {
     let row = null;
-    for (let i = 0; !row && i < 5; i++) {
+    for (let i = 0; !row && i < 32; i++) {
       row = await Dialer.lastIncomingCall(ring.since);
-      if (!row) await sleep(1000);
+      if (!row) await sleep(250);
     }
-    // No row: still on the call, or it was missed. Kept, so the next IDLE or return to the app checks again.
-    if (!row) { ring.checking = false; return; }
-    if (incomingRef.current === ring) incomingRef.current = null;
-    const free = () => formRef.current && ['idle', 'done', 'paused'].includes(phaseRef.current);
-    if (!row.durationSec || !free()) return;
-    const found = await api('/api/lead/callback', { method: 'POST', body: { phone: row.number } }).catch(() => null);
-    if (!found?.lead || !free()) return;
-    const l = { ...found.lead, ruleId: null };
-    callRef.current = { lead: l, startedAt: new Date(row.date).toISOString(), returnTo: phaseRef.current };
+    const found = (await ring.lookup) || (row && (await identify(row.number)));
+    if (row) markIncomingHandled(row.date);
+    if (found && row?.durationSec) openIncoming({ ...found, seconds: row.durationSec, at: row.date });
+  }
+
+  // The app was frozen or closed while a lead's call was answered: on open, the newest answered incoming call today
+  // on the business SIM that hasn't been handled yet.
+  async function catchUpIncoming() {
+    if (incomingRef.current) return; // a call is ringing or going on; it's handled when it ends
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    let handled = 0;
+    try { handled = Number(localStorage.getItem('incoming-handled')) || 0; } catch {}
+    const row = await Dialer.lastIncomingCall(Math.max(handled + 1, today.getTime(), Date.now() - 12 * 3600000)).catch(() => null);
+    if (!row?.durationSec) return;
+    const { simId } = loadPrefs();
+    // Phones whose call log names the SIM differently (not a number) aren't filtered.
+    if (simId != null && /^\d+$/.test(row.account) && Number(row.account) !== simId) return;
+    markIncomingHandled(row.date);
+    const found = await identify(row.number);
+    if (found) openIncoming({ ...found, seconds: row.durationSec, at: row.date });
+  }
+  const markIncomingHandled = (date) => { try { localStorage.setItem('incoming-handled', String(date)); } catch {} };
+
+  // Open that lead's form: switch its own reason screen to connected, open now when the dialer is free,
+  // or keep it until the call being marked is saved.
+  function openIncoming(item, returnTo) {
+    const title = item.calledBack ? 'Called you back' : 'Called you';
+    const phase = phaseRef.current;
+    if (phase === 'reason' && callRef.current?.lead.prospectId === item.lead.prospectId) {
+      callRef.current.startedAt = new Date(item.at).toISOString();
+      setCallback(title);
+      setTalkSeconds(item.seconds);
+      setValues(startValues(formRef.current, 'Yes'));
+      setPhase('outcome');
+      return;
+    }
+    if (!returnTo && (!formRef.current || !['idle', 'done', 'paused'].includes(phase))) { pendingIncomingRef.current = item; return; }
+    const l = { ...item.lead, ruleId: null };
+    callRef.current = { lead: l, startedAt: new Date(item.at).toISOString(), returnTo: returnTo || phase };
     setLead(l);
     setLeadOpen(false);
-    setCallback(true);
-    setTalkSeconds(row.durationSec);
+    setCallback(title);
+    setTalkSeconds(item.seconds);
     setValues(startValues(formRef.current, 'Yes'));
     setPhase('outcome');
-    Dialer.bringToFront();
   }
 
   function closePrefs() {
     if (prefsOpen === 'chooseSim') setHeld(false); // the countdown is at 0, so this dials
     setPrefsOpen(null);
+    listenIncoming(); // the business SIM may have changed
   }
 
   // Opens this lead in LSQ on the person's laptop, through the Chrome extension signed in as them.
@@ -428,7 +486,8 @@ export default function DialerScreen({ me }) {
     showToast(`${form.name} saved for ${lead.name || 'lead'}`);
     await sleep(1000); // a moment to see it saved before the next lead comes up; Save stays disabled meanwhile
     setSaving(false);
-    if (returnTo) { setCallback(false); setLead(null); setPhase(returnTo); } else next();
+    setCallback(null);
+    if (returnTo && returnTo !== 'next') { setLead(null); setPhase(returnTo); } else next();
   }
 
   // Instant: the next lead comes up at once (waiting on the save let the countdown run on, and the buttons shift
@@ -464,7 +523,7 @@ export default function DialerScreen({ me }) {
   const status = {
     countdown: held ? 'Paused' : `Calling in ${countdown}`,
     calling: 'On call',
-    outcome: callback ? `Called you back, ${talkSeconds} s` : talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
+    outcome: callback ? `${callback}, ${talkSeconds} s` : talkSeconds ? `Connected, ${talkSeconds} s` : 'Not connected',
     reason: 'Not answered',
     loading: 'Next lead',
   }[phase];
@@ -750,6 +809,7 @@ export default function DialerScreen({ me }) {
         </ScrollView>
       )}
 
+      {!!incomingLead && <Text style={[styles.footnote, { color: colors.text, fontWeight: '600' }]} numberOfLines={1}>On a call with {incomingLead.name || 'a lead'}</Text>}
       {!!error && <Text style={[styles.footnote, { color: colors.red }]} numberOfLines={3}>{error}</Text>}
 
       <Toast text={toast} />
@@ -833,7 +893,8 @@ const styles = StyleSheet.create({
   call: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 20, paddingBottom: 24 },
   barTrack: { height: 2, backgroundColor: colors.line },
   barFill: { height: 2, backgroundColor: colors.text, transformOrigin: 'left' },
-  banner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingTop: 14 },
+  // Opaque and on top, so the lead's name scrolling up passes under it instead of showing through.
+  banner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingTop: 14, paddingBottom: 10, backgroundColor: colors.bg, zIndex: 1, elevation: 1 },
   bannerText: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text, fontVariant: ['tabular-nums'] },
   bannerHint: { fontSize: 13, color: colors.muted },
   callPhone: { fontSize: 18, color: colors.text, fontVariant: ['tabular-nums'] },
@@ -842,9 +903,12 @@ const styles = StyleSheet.create({
   tagOn: { color: colors.bg, backgroundColor: colors.text },
   history: { marginTop: 28, gap: 4 },
   historyTitle: { fontSize: 15, fontWeight: '600', color: colors.text, marginBottom: 4 },
-  historyRow: { paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
-  historyHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
-  historyWhat: { flex: 1, fontSize: 15, fontWeight: '500', color: colors.text },
+  historyRow: { paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  historyHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  historyIcon: { width: 18 },
+  historyIndent: { marginLeft: 28 },
+  historyNote: { fontSize: 14, lineHeight: 20, color: colors.text, fontStyle: 'italic', marginTop: 4 },
+  historyWhat: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.text }, // the activity's name
   historyAt: { fontSize: 13, color: colors.muted },
   historySub: { fontSize: 14, color: colors.muted, marginTop: 2 },
   mark: { flex: 1, paddingHorizontal: 24, paddingTop: 16 },
