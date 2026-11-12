@@ -175,10 +175,20 @@ async function postActivity({ keys, event, prospectId, ownerId, at, fields, note
   return data.Message.Id;
 }
 
+// Whether the lead already has this activity at exactly this time (the dialer posts ActivityDateTime = call start).
+async function alreadyPosted({ event, prospectId, at }) {
+  const { data } = await lsqClient.post(`${lsqUrl('ProspectActivity.svc/Retrieve')}&leadId=${encodeURIComponent(prospectId)}`, {
+    Parameter: { FromDate: '', ToDate: '', IncludeCustomActivity: 1, ActivityEvent: event },
+    Paging: { Offset: '0', RowCount: '10' },
+    Sorting: { ColumnName: 'CreatedOn', Direction: '1' },
+  });
+  return (data.ProspectActivities || []).some(a => a.EventCode === event && a.CreatedOn === lsqTime(at));
+}
+
 // Who LSQ says created an activity; catches someone who pasted a colleague's keys.
 async function activityCreatorEmail(activityId) {
   const { data } = await lsqClient.get(`${lsqUrl('ProspectActivity.svc/GetActivityDetails')}&activityId=${encodeURIComponent(activityId)}`);
   return data.CreatedByEmail || null;
 }
 
-module.exports = { FORMS, shown, activityEventFor, getForm, toForm, toLsqFields, postActivity, activityCreatorEmail };
+module.exports = { FORMS, shown, alreadyPosted, activityEventFor, getForm, toForm, toLsqFields, postActivity, activityCreatorEmail };

@@ -114,6 +114,17 @@ describe('/api/disposition posts the activity with the caller\'s own keys', () =
     expect(inserted).toHaveLength(1);
   });
 
+  test('a retry that LSQ already has is not posted again, but the call is still recorded', async () => {
+    const check = jest.spyOn(activity, 'alreadyPosted').mockResolvedValueOnce(true);
+    expect((await post({ ...marked, retry: true })).status).toBe(201);
+    expect(lsq).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(1);
+    lsq.mockResolvedValueOnce('act-10');
+    await post(marked); // a first try never checks
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(lsq).toHaveBeenCalledTimes(1);
+  });
+
   test('no key, or a key LSQ refuses: nothing saved, the app is told to update it, no org-key fallback', async () => {
     lsqKeys.getKeys.mockResolvedValueOnce(null);
     const none = await post(marked);

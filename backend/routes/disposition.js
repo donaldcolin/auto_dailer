@@ -22,7 +22,7 @@ function verifyCreator(profile, keys, activityId) {
 // One row per dial. The call itself reaches LSQ through Callyzer; the caller's own marking goes in as their team's
 // LSQ activity (`activity` in the body), posted before the row so a failed post can be retried without losing it.
 router.post('/', requireAuth, async (req, res) => {
-  const { prospectId, phone, outcome, talkSeconds, startedAt, ruleId, note, activity: values } = req.body || {};
+  const { prospectId, phone, outcome, talkSeconds, startedAt, ruleId, note, activity: values, retry } = req.body || {};
   if (!prospectId || typeof prospectId !== 'string') return res.status(400).json({ error: 'prospectId is required' });
   if (!OUTCOMES.includes(outcome)) return res.status(400).json({ error: `outcome must be one of ${OUTCOMES.join(', ')}` });
   if (talkSeconds != null && !(Number.isInteger(talkSeconds) && talkSeconds >= 0)) {
@@ -46,8 +46,12 @@ router.post('/', requireAuth, async (req, res) => {
     const keys = await lsqKeys.getKeys(req.profile.id);
     if (!keys) return res.status(422).json(KEY_REJECTED);
     try {
-      const activityId = await activity.postActivity({ keys, event, prospectId, ownerId: req.profile.lsq_user_id, at: started, ...lsq });
-      verifyCreator(req.profile, keys, activityId);
+      // A retry from the phone's outbox: the first try may have reached LSQ with only the reply lost. Seen 2026-11-12.
+      const already = retry && await activity.alreadyPosted({ event, prospectId, at: started });
+      if (!already) {
+        const activityId = await activity.postActivity({ keys, event, prospectId, ownerId: req.profile.lsq_user_id, at: started, ...lsq });
+        verifyCreator(req.profile, keys, activityId);
+      }
     } catch (e) {
       console.error('[activity]', e.response?.status, JSON.stringify(e.response?.data) || e.message);
       if (e.response?.status === 401) return res.status(422).json(KEY_REJECTED);
