@@ -38,7 +38,12 @@ async function keysWork(keys) {
   }
 }
 
+// Decrypted keys for a few minutes, so each save skips a database read. Forgotten when the person saves new keys.
+const KEY_CACHE_MS = 10 * 60 * 1000;
+const _keyCache = new Map(); // user id -> { keys, expires }
+
 async function saveKeys(userId, { accessKey, secretKey }) {
+  _keyCache.delete(userId);
   const { error } = await supabase.from('user_lsq_keys').upsert({
     user_id: userId,
     access_key_enc: encrypt(accessKey),
@@ -57,11 +62,15 @@ async function hasKeys(userId) {
 
 // { accessKey, secretKey, verified } or null.
 async function getKeys(userId) {
+  const hit = _keyCache.get(userId);
+  if (hit && hit.expires > Date.now() && !(hit.keys && !hit.keys.verified)) return hit.keys; // unverified: re-read until verified
   const { data, error } = await supabase.from('user_lsq_keys')
     .select('access_key_enc, secret_key_enc, verified_at').eq('user_id', userId).maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  return { accessKey: decrypt(data.access_key_enc), secretKey: decrypt(data.secret_key_enc), verified: !!data.verified_at };
+  const keys = { accessKey: decrypt(data.access_key_enc), secretKey: decrypt(data.secret_key_enc), verified: !!data.verified_at };
+  _keyCache.set(userId, { keys, expires: Date.now() + KEY_CACHE_MS });
+  return keys;
 }
 
 async function markVerified(userId) {

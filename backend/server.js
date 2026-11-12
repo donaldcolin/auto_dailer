@@ -6,6 +6,15 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors({ origin: true }));
 app.use(express.json());
+// Slow requests, to see where time goes between calls (LSQ waits are logged by config/lsq.js).
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    if (ms > 2000) console.log(`[slow] ${req.method} ${req.baseUrl}${req.path} ${res.statusCode} ${ms}ms`);
+  });
+  next();
+});
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 // The newest APK (Railway env). Phones on an older build show "Update available"; /download is the link new users get.

@@ -3,6 +3,7 @@ const { getProfile } = require('../services/profile');
 const { withTeamLead } = require('../services/team');
 
 const USER_CACHE_TTL_MS = 60 * 1000;
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000; // a signed-in token is checked with Supabase at most every 5 minutes
 const _userCache = new Map(); // token -> { user, expires }
 const _profileCache = new Map(); // auth user id -> { profile, expires }: saves 2 database reads per request while dialing
 
@@ -19,7 +20,7 @@ async function verifySupabaseToken(token) {
   if (error || !data?.user) return null;
 
   if (_userCache.size > 1000) _userCache.clear();
-  _userCache.set(token, { user: data.user, expires: now + USER_CACHE_TTL_MS });
+  _userCache.set(token, { user: data.user, expires: now + TOKEN_CACHE_TTL_MS });
   return data.user;
 }
 
