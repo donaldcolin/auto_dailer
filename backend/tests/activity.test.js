@@ -24,9 +24,9 @@ const TYPE = {
 };
 const form = { ...toForm(TYPE), rules: [] }; // checks values only; the HR rules have their own tests
 
-test('the mode picks the activity: HR 284, Sales 218, nothing before setup', () => {
+test('the mode picks the activity: HR 284, Sales 286, nothing before setup', () => {
   expect(activityEventFor({ mode: 'hr' })).toBe(284);
-  expect(activityEventFor({ mode: 'sales' })).toBe(218);
+  expect(activityEventFor({ mode: 'sales' })).toBe(286);
   expect(activityEventFor({ groups: ['Team HR'] })).toBeNull();
 });
 

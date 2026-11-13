@@ -2,7 +2,7 @@ const { lsqClient, lsqUrl, lsqParams } = require('../config/lsq');
 const { keyHeaders } = require('./lsq_keys');
 
 // The LSQ activity each mode marks after a call, and how the app lays out its form.
-const EVENT_BY_MODE = { hr: 284, sales: 218 };
+const EVENT_BY_MODE = { hr: 284, sales: 286 };
 
 // HR form rules. `when`: every field must have that value, or any value for `true`.
 const PICKED = { mx_Custom_7: true, mx_Custom_10: true, mx_Custom_2: true }; // Function, Role, Activity Type
@@ -58,7 +58,16 @@ const FORMS = {
     sticky: [],
     defaults: {},
   },
-  218: { // BDA Activity. Sales stays closed (SALES_READY) until an LSQ admin makes "Spoke with" optional.
+  // Auto Dailer - BDA activity (2026-11-14): 218's fields under different numbers, so the dialer's calls can be told
+  // apart. "Spoke with" is optional here, so unanswered calls no longer need a placeholder.
+  286: {
+    sections: [[null, ['mx_Custom_1', 'Status', 'mx_Custom_3', 'mx_Custom_24', 'mx_Custom_2', 'ActivityEvent_Note', 'mx_Custom_20']]],
+    sticky: ['mx_Custom_1'],
+    defaults: { mx_Custom_1: 'Qualification Call' },
+    alwaysBlank: ['mx_Custom_34'], // Prep. for which entrance: LSQ filled "JEE" into it on 218 when left out
+  },
+  // BDA Activity, used until 2026-11-14. Kept so calls marked before then still show in Recent activity.
+  218: {
     sections: [[null, ['mx_Custom_1', 'Status', 'mx_Custom_4', 'mx_Custom_31', 'mx_Custom_3', 'ActivityEvent_Note', 'mx_Custom_26']]],
     sticky: ['mx_Custom_1'],
     defaults: { mx_Custom_1: 'Qualification Call' },
