@@ -1,4 +1,6 @@
-jest.mock('../config/lsq', () => ({ lsqClient: { post: jest.fn(), get: jest.fn() }, lsqUrl: p => p }));
+jest.mock('../config/lsq', () => ({ lsqClient: { post: jest.fn(), get: jest.fn() }, lsqUrl: p => p, lsqParams: () => ({ host: 'https://lsq' }) }));
+const mockKeys = { value: { accessKey: 'ak', secretKey: 'sk' } };
+jest.mock('../services/lsq_keys', () => ({ getKeys: async () => mockKeys.value, keyHeaders: k => ({ key: k.accessKey }) }));
 jest.mock('../services/rules', () => ({
   activeRuleFor: jest.fn(),
   istNow: () => ({ midnightIso: '2026-11-03T00:00:00+05:30' }),
@@ -32,7 +34,7 @@ let listRows = [];
 let ownedPagesRead = 0;
 let byIdsCalls = 0;
 let pushes = PUSHES;
-lsqClient.post.mockImplementation(async (url, body) => {
+lsqClient.post.mockImplementation(async (url, body, opts) => {
   if (url.includes('RetrieveRecentlyModified')) return { data: { ProspectActivities: pushes } };
   if (url.includes('Retrieve/ByIds')) {
     byIdsCalls++;
@@ -43,8 +45,16 @@ lsqClient.post.mockImplementation(async (url, body) => {
     const { PageIndex, PageSize } = body.Paging;
     return { data: owned.slice((PageIndex - 1) * PageSize, PageIndex * PageSize) };
   }
+  listReads.push({ url, sort: body.Sorting.ColumnName, headers: opts?.headers });
   return { data: { RecordCount: listRows.length, Leads: listRows } };
 });
+const listReads = [];
+lsqClient.get.mockImplementation(async url => (url.includes('Lists.Get')
+  ? { data: [
+    { ListId: 'lv2', ListName: 'Dialer – Open lead to be called', ListType: 'dynamic' },
+    { ListId: 'lv1', ListName: 'Dialer – Leads assigned today', ListType: 'dynamic' },
+  ] }
+  : { data: [] }));
 // Pushed leads are read one by one; both belong to L3 (old enough to be outside any default queue).
 const PUSHED_LEADS = {
   ...Object.fromEntries(Array.from({ length: 67 }, (_, i) => [`many${i}`, { ProspectID: `many${i}`, FirstName: `M${i}`, OwnerId: 'L8', Mobile: String(i) }])),
@@ -165,7 +175,7 @@ test('if LSQ refuses the pushed leads, the normal queue still loads', async () =
   activeRuleFor.mockResolvedValue(null);
   owned = [{ ProspectID: 'own1', OwnerId: 'L9', Mobile: '1', ProspectStage: 'New Lead' }];
   const real = lsqClient.post.getMockImplementation();
-  lsqClient.post.mockImplementation(async (url, body) => {
+  lsqClient.post.mockImplementation(async (url, body, opts) => {
     if (url.includes('Retrieve/ByIds')) throw Object.assign(new Error('429'), { response: { data: { ExceptionMessage: 'API calls exceeded the limit' } } });
     return real(url, body);
   });
@@ -180,3 +190,37 @@ test('if LSQ refuses the pushed leads, the normal queue still loads', async () =
   }
 });
 
+
+describe('views: a Smart View tab mirrored by a "Dialer – …" List', () => {
+  const lp = (id, owner) => ({ LeadPropertyList: [{ Attribute: 'ProspectID', Value: id }, { Attribute: 'OwnerId', Value: owner }, { Attribute: 'Mobile', Value: '1' }] });
+  beforeEach(() => { listReads.length = 0; mockKeys.value = { accessKey: 'ak', secretKey: 'sk' }; });
+
+  test('views come in the Smart Views order, prefix removed', async () => {
+    const { getViews } = require('../services/queue');
+    expect(await getViews()).toEqual([{ id: 'lv1', name: 'Leads assigned today' }, { id: 'lv2', name: 'Open lead to be called' }]);
+  });
+
+  test("the List is read with the person's own key, newest change first, and still only their leads", async () => {
+    activeRuleFor.mockResolvedValue(null);
+    listRows = [lp('v1', 'L20'), lp('v2', 'L99')];
+    const q = await getQueue({ id: 'u20', lsq_user_id: 'L20', groups: [] }, new Date(), { view: 'lv2' });
+    expect(q.source).toBe('view');
+    expect(q.view).toEqual({ id: 'lv2', name: 'Open lead to be called' });
+    expect(q.leads.map(l => l.prospectId)).toEqual(['v1']);
+    expect(listReads[0]).toMatchObject({ url: 'https://lsq/LeadManagement.svc/Leads/Retrieve/BySearchParameter', sort: 'ModifiedOn', headers: { key: 'ak' } });
+  });
+
+  test('an unknown view falls back to their own leads; a running rule wins over a view', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    expect((await getQueue({ id: 'u21', lsq_user_id: 'L21', groups: [] }, new Date(), { view: 'gone' })).source).toBe('own');
+    activeRuleFor.mockResolvedValue({ id: 'r9', list_id: 'list9', list_name: 'Dialer – Callback', start_time: '16:00:00' });
+    expect((await getQueue({ id: 'u22', lsq_user_id: 'L22', groups: [] }, new Date(), { view: 'lv1' })).source).toBe('rule');
+  });
+
+  test('no personal key: asked to add it, never read with the admin key', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    mockKeys.value = null;
+    await expect(getQueue({ id: 'u23', lsq_user_id: 'L23', groups: [] }, new Date(), { view: 'lv1' })).rejects.toMatchObject({ status: 422 });
+    expect(listReads).toHaveLength(0);
+  });
+});

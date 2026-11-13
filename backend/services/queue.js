@@ -3,6 +3,9 @@ const { lsqClient, lsqUrl } = require('../config/lsq');
 const { activeRuleFor, istNow } = require('./rules');
 const { fetchPushes, pendingPushes } = require('./pushed');
 const { activityEventFor } = require('./activity');
+const { getDialerLists } = require('./lsq_lists');
+const lsqKeys = require('./lsq_keys');
+const { lsqParams } = require('../config/lsq');
 
 const LIST_CACHE_MS = 5 * 60 * 1000;
 const PUSH_CACHE_MS = 60 * 1000; // a TL's push reaches the queue within a minute
@@ -62,19 +65,45 @@ const toLead = row => {
 };
 
 // Every lead in a dynamic List. Page 1 asks LSQ to recalculate the List; later pages reuse that result.
-async function readList(listId) {
+// With `keys` (a person's own), LSQ's permissions return only the leads that person may see, like their Smart Views.
+async function readList(listId, { keys, sortOn = 'CreatedOn', maxPages = Infinity } = {}) {
+  const url = keys ? `${lsqParams().host}/LeadManagement.svc/Leads/Retrieve/BySearchParameter` : lsqUrl('LeadManagement.svc/Leads/Retrieve/BySearchParameter');
   const leads = [];
-  for (let page = 1; ; page++) {
-    const { data } = await lsqClient.post(lsqUrl('LeadManagement.svc/Leads/Retrieve/BySearchParameter'), {
+  for (let page = 1; page <= maxPages; page++) {
+    const { data } = await lsqClient.post(url, {
       SearchParameters: { ListId: listId, RetrieveBehaviour: page === 1 ? '1' : '0' },
       Columns: { Include_CSV: COLUMNS },
-      Sorting: { ColumnName: 'CreatedOn', Direction: '1' },
+      Sorting: { ColumnName: sortOn, Direction: '1' },
       Paging: { PageIndex: page, PageSize: PAGE_SIZE },
-    });
+    }, keys ? { headers: lsqKeys.keyHeaders(keys) } : undefined);
     const rows = data.Leads || [];
     leads.push(...rows.map(toLead));
-    if (rows.length < PAGE_SIZE || leads.length >= data.RecordCount) return leads;
+    if (rows.length < PAGE_SIZE || leads.length >= data.RecordCount) break;
   }
+  return leads;
+}
+
+// Views: the sales Smart View tabs, each mirrored by a "Dialer – <tab>" List (see SMART_VIEWS.md), in LSQ's order.
+const VIEW_ORDER = ['Leads assigned today', 'Pending follow up for today', 'Lead with zero connect', 'Demo conducted not registered',
+  'Overdue task all time', 'Hot Lead - Outreach + Organic', 'Leads without Task', 'Open lead to be called'];
+const VIEW_CACHE_MS = 2 * 60 * 1000; // a lead the tab's rule brings back shows within 2 minutes
+const viewName = list => list.name.replace(/^dialer\s*[–—-]\s*/i, '').trim();
+const noKey = () => Object.assign(new Error('Add your LeadSquared key (☰ → Settings) to use views.'), { status: 422, code: 'lsq_key_rejected' });
+
+async function getViews() {
+  const rank = n => { const i = VIEW_ORDER.findIndex(v => v.toLowerCase() === n.toLowerCase()); return i < 0 ? VIEW_ORDER.length : i; };
+  return (await getDialerLists()).map(l => ({ id: l.id, name: viewName(l) }))
+    .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+}
+
+// One person's leads in a view, read with their own key, sorted like the Smart Views (newest change first).
+// shortcut: an admin's key sees every lead, so at most MAX_PAGES pages are read; fine for sales users, who see their own.
+async function getViewLeads(profile, listId, fresh) {
+  const key = `view:${profile.id}:${listId}`;
+  if (fresh) _cache.delete(key);
+  const keys = await lsqKeys.getKeys(profile.id);
+  if (!keys) throw noKey();
+  return cached(key, () => readList(listId, { keys, sortOn: 'ModifiedOn', maxPages: MAX_PAGES }), VIEW_CACHE_MS);
 }
 
 // The newest leads an LSQ user owns that `keep` accepts and that have a phone, up to MAX_QUEUE.
@@ -162,8 +191,10 @@ async function getPushedLeads(profile) {
  * stages; for HR, minus anyone already spoken to); a TL rule active right now replaces that part with its List.
  * `fresh` skips the LSQ caches for this caller.
  */
-async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
+async function getQueue(profile, now = new Date(), { fresh = false, view = null } = {}) {
   const rule = await activeRuleFor(profile, now);
+  // A view the person picked; a running TL rule still wins. Unknown or deleted Lists fall back to their own leads.
+  const viewInfo = !rule && view ? (await getViews()).find(v => v.id === view) || null : null;
   // "Refresh leads" in the app: re-read LSQ now instead of waiting out the caches (new pushes, newly assigned leads).
   if (fresh) {
     ['pushes', 'pushed-leads', `owner:${profile.lsq_user_id}`, rule && `list:${rule.list_id}`].forEach(k => k && _cache.delete(k));
@@ -174,7 +205,7 @@ async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
   dialedToday = rule ? dialedToday.eq('rule_id', rule.id) : dialedToday.is('rule_id', null);
 
   const [leads, { data: dialed, error }, pushed] = await Promise.all([
-    rule ? getListLeads(rule.list_id) : getOwnedLeads(profile),
+    rule ? getListLeads(rule.list_id) : viewInfo ? getViewLeads(profile, viewInfo.id, fresh) : getOwnedLeads(profile),
     dialedToday,
     // Pushes are extra: if LSQ refuses that part, the caller still gets their normal queue.
     getPushedLeads(profile).catch(err => {
@@ -189,11 +220,12 @@ async function getQueue(profile, now = new Date(), { fresh = false } = {}) {
     .filter(l => !pushedIds.has(l.prospectId));
 
   return {
-    source: rule ? 'rule' : 'own',
+    source: rule ? 'rule' : viewInfo ? 'view' : 'own',
+    view: viewInfo,
     rule: rule && { id: rule.id, listName: rule.list_name, startTime: String(rule.start_time).slice(0, 5) },
     pushedCount: pushed.length,
     leads: [...pushed, ...rest].map(({ ownerId, connects, ...lead }) => lead),
   };
 }
 
-module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, getListLeads, getOwnedLeads, ownQueue, readList };
+module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, getViews, getListLeads, getOwnedLeads, ownQueue, readList };
