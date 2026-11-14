@@ -373,9 +373,10 @@ export default function DialerScreen({ me }) {
     }
     callRef.current = { lead, since: Date.now() - 2000, startedAt: new Date().toISOString(), sawOffhook: false, finishing: false };
     setPhase('calling');
+    // Sent before dialing: once the phone app takes the screen, Android may hold this app's requests back.
+    if (prefs.autoLaptop) api(`/api/lead/${encodeURIComponent(lead.prospectId)}/open-on-laptop`, { method: 'POST' }).catch(() => {});
     try {
       Dialer.placeCall(dialable(lead.phone), sims.some((s) => s.id === prefs.simId) ? prefs.simId : null);
-      if (prefs.autoLaptop) api(`/api/lead/${encodeURIComponent(lead.prospectId)}/open-on-laptop`, { method: 'POST' }).catch(() => {});
     } catch (e) {
       setError(`Could not place the call: ${e.message}`);
       callRef.current = null;

@@ -11,6 +11,9 @@ const storage = {
 };
 const db = supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey, {
   auth: { storage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+  // Chrome stops a service worker after 30 s without activity; WebSocket traffic counts (Chrome 116+). The default 30 s
+  // heartbeat raced that timer, so leads sometimes waited for the 30 s catch-up below. 20 s keeps the worker awake.
+  realtime: { heartbeatIntervalMs: 20000 },
 });
 let channel = null;
 let signingIn = null;
