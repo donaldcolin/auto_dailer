@@ -150,7 +150,7 @@ export default function DialerScreen({ me }) {
       setGranted(ok);
       if (ok) { Dialer.startCallStateListener(); listenIncoming(); }
     });
-    loadQueue().catch((e) => setError(e.message));
+    loadShown(!lastQueue).catch((e) => setError(e.message));
 
     // A call ringing in on the business SIM: named during the call if it's one of the person's leads, its form after.
     const inSub = Dialer.addListener('onIncoming', ({ state, number, answered }) => {
@@ -285,14 +285,33 @@ export default function DialerScreen({ me }) {
     return pending();
   }
 
-  // Names first (instant), then the lead counts on each chip (a person's first count reads their tasks: a few seconds).
+  // Names first (instant), then the lead counts on each chip (a person's first count reads their tasks: a few seconds),
+  // then every view not on the phone yet is fetched quietly, so its first tap shows leads at once.
   const loadViews = () => {
     const show = (list) => { setViews(list); remember(`views-${me.email}`, list); };
     api('/api/queue/views').then((r) => {
       setViews((old) => r.views.map((v) => ({ ...v, count: old?.find((o) => o.id === v.id)?.count })));
       return api('/api/queue/views?counts=1');
-    }).then((r) => show(r.views)).catch(() => {});
+    }).then((r) => { show(r.views); return prefetchViews(r.views); }).catch(() => {});
   };
+  async function prefetchViews(list) {
+    if (list.length < 2) return;
+    for (const v of list) {
+      if (v.id === viewRef.current || cached(`queue-${me.email}-${v.id}`)) continue;
+      const q = await api(`/api/queue?view=${encodeURIComponent(v.id)}`); // one at a time: the counts call warmed the server
+      remember(`queue-${me.email}-${v.id}`, { leads: q.leads, rule: q.rule, source: q.source });
+    }
+  }
+
+  // A spinner only when there's nothing on screen yet and LSQ takes over a second. A saved list refreshes silently.
+  const [slow, setSlow] = useState(false);
+  const loadSeq = useRef(0);
+  function loadShown(empty) {
+    const seq = ++loadSeq.current;
+    setSlow(false);
+    const t = empty && setTimeout(() => seq === loadSeq.current && setSlow(true), 1000);
+    return loadQueue().finally(() => { clearTimeout(t); if (seq === loadSeq.current) setSlow(false); });
+  }
   // The open chip stays in sight, a little in from the left edge.
   const chipsRef = useRef(null);
   const chipX = useRef({});
@@ -307,7 +326,7 @@ export default function DialerScreen({ me }) {
     const last = cached(`queue-${me.email}-${id}`);
     queueRef.current = last || { leads: [], rule: null, source: null };
     if (last) pending(); else setQueueInfo(null);
-    loadQueue().catch((e) => setError(e.message));
+    loadShown(!last).catch((e) => setError(e.message));
   }
 
   async function refreshNow() {
@@ -811,13 +830,17 @@ export default function DialerScreen({ me }) {
                       key={v.id}
                       accessibilityRole="tab"
                       accessibilityState={{ selected: on }}
-                      accessibilityLabel={n == null ? label : `${label}, ${n} ${n === 1 ? 'lead' : 'leads'}`}
+                      accessibilityLabel={on && slow ? `${label}, loading` : n == null ? label : `${label}, ${n} ${n === 1 ? 'lead' : 'leads'}`}
                       onLayout={(e) => { chipX.current[v.id] = e.nativeEvent.layout.x; if (on) scrollToChip(v.id); }}
                       onPress={() => { if (!on) { pickView(v.id); scrollToChip(v.id); } }}
                       style={({ pressed }) => [styles.viewChip, on && styles.viewChipOn, pressed && !on && styles.pressed]}
                     >
                       <Text style={[styles.viewText, on && styles.viewTextOn]}>{label}</Text>
-                      {n != null && (
+                      {on && slow ? (
+                        <View style={[styles.viewCount, styles.viewCountOn]}>
+                          <ActivityIndicator size="small" color={colors.text} style={{ transform: [{ scale: 0.7 }] }} />
+                        </View>
+                      ) : n != null && (
                         <View style={[styles.viewCount, on && styles.viewCountOn]}>
                           <Text style={[styles.viewCountText, on && styles.viewCountTextOn]}>{n}</Text>
                         </View>
@@ -862,6 +885,12 @@ export default function DialerScreen({ me }) {
             )
           ) : (
             <View accessibilityLabel="Loading your leads">
+              {slow && (
+                <View style={styles.slowNote}>
+                  <ActivityIndicator size="small" color={colors.muted} />
+                  <Text style={styles.muted}>Getting your leads from LeadSquared…</Text>
+                </View>
+              )}
               <Skeleton style={{ height: 44, borderRadius: 22 }} />
               <Skeleton style={{ width: 120, height: 14, marginTop: 28, marginBottom: 8 }} />
               {[0, 1, 2, 3, 4].map((i) => (
@@ -968,6 +997,7 @@ const styles = StyleSheet.create({
   // Count badge: grey on a grey chip; white with black figures on the open (black) chip, so the number stands out.
   viewCount: { minWidth: 24, height: 24, paddingHorizontal: 7, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E2E2E2' },
   viewCountOn: { backgroundColor: colors.bg },
+  slowNote: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
   viewCountText: { fontSize: 13, fontWeight: '600', color: '#555', fontVariant: ['tabular-nums'] },
   viewCountTextOn: { color: colors.text, fontWeight: '700' },
   tag: { fontSize: 13, color: colors.text, backgroundColor: '#F2F2F2', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, overflow: 'hidden' },
