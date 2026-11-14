@@ -7,6 +7,7 @@ declare class DialerModule extends NativeModule<DialerModuleEvents> {
   listSims(): { id: number; slot: number; name: string; carrier: string }[];
   startCallStateListener(): void;
   stopCallStateListener(): void;
+  isInCall(): boolean;
   lastOutgoingCall(sinceMs: number): Promise<OutgoingCall | null>;
   lastIncomingCall(sinceMs: number): Promise<OutgoingCall | null>;
   bringToFront(): void;

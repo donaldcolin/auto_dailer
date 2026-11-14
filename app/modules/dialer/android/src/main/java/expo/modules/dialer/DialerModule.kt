@@ -32,8 +32,12 @@ private val AUDIO = setOf("m4a", "mp3", "amr", "aac", "wav", "ogg", "3gp", "opus
 private const val CALLYZER_FOLDER = "Recordings/Kalvium Calls"
 
 class DialerModule : Module() {
-  private var callback: TelephonyCallback? = null // Android 12+
-  private var legacyListener: PhoneStateListener? = null // Android 10–11
+  // One listener per active SIM: on a dual-SIM phone the default TelephonyManager only reports its own SIM,
+  // so a call on the other one never ended for us (iQOO Z7 Pro, 2026-11-14).
+  private val callbacks = mutableListOf<Pair<TelephonyManager, TelephonyCallback>>() // Android 12+
+  private val legacyListeners = mutableListOf<Pair<TelephonyManager, PhoneStateListener>>() // Android 10–11
+  private val simStates = mutableMapOf<Int, Int>() // subscription id → its call state
+  private var phoneState: Int? = null // all SIMs together, as last sent
   private var dialing = false // a call we placed is in progress
   private var sawOffhook = false
   // Calls coming in on the business SIM (Settings → Call from): which lead it is shows during the call, its form after.
@@ -84,27 +88,39 @@ class DialerModule : Module() {
 
     // Android 12+ uses TelephonyCallback; Android 10–11 the older PhoneStateListener (same states).
     Function("startCallStateListener") {
-      if (callback != null || legacyListener != null) return@Function null
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-          override fun onCallStateChanged(state: Int) = onCallState(state)
-        }
-        telephony.registerTelephonyCallback(context.mainExecutor, cb)
-        callback = cb
-      } else {
-        // PhoneStateListener needs a Looper thread, so it's created and registered on the main thread.
-        Handler(Looper.getMainLooper()).post {
-          @Suppress("DEPRECATION")
-          val l = object : PhoneStateListener() {
-            @Deprecated("Android 10–11 only")
-            override fun onCallStateChanged(state: Int, phoneNumber: String?) = onCallState(state)
+      if (callbacks.isNotEmpty() || legacyListeners.isNotEmpty()) return@Function null
+      // PhoneStateListener needs a Looper thread, so everything is registered on the main thread.
+      Handler(Looper.getMainLooper()).post {
+        val subs = runCatching {
+          context.getSystemService(SubscriptionManager::class.java).activeSubscriptionInfoList?.map { it.subscriptionId }
+        }.getOrNull().orEmpty().ifEmpty { listOf(SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) }
+        for (sub in subs) {
+          val tm = if (sub == SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) telephony else telephony.createForSubscriptionId(sub)
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+              override fun onCallStateChanged(state: Int) = onSimState(sub, state)
+            }
+            tm.registerTelephonyCallback(context.mainExecutor, cb)
+            callbacks.add(tm to cb)
+          } else {
+            @Suppress("DEPRECATION")
+            val l = object : PhoneStateListener() {
+              @Deprecated("Android 10–11 only")
+              override fun onCallStateChanged(state: Int, phoneNumber: String?) = onSimState(sub, state)
+            }
+            @Suppress("DEPRECATION")
+            tm.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
+            legacyListeners.add(tm to l)
           }
-          @Suppress("DEPRECATION")
-          telephony.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
-          legacyListener = l
         }
       }
       null
+    }
+
+    // Whether any call is going on, on any SIM: the app checks this when it comes back during "Calling…",
+    // in case the end of the call was never reported.
+    Function("isInCall") {
+      runCatching { context.getSystemService(TelecomManager::class.java).isInCall }.getOrDefault(true)
     }
 
     Function("stopCallStateListener") { stopListening() }
@@ -204,6 +220,20 @@ class DialerModule : Module() {
     OnDestroy { stopListening() }
   }
 
+  // The phone's state is the busiest SIM's: a call on one SIM while the other sits idle is still a call.
+  private fun onSimState(sub: Int, state: Int) {
+    simStates[sub] = state
+    val all = simStates.values
+    val phone = when {
+      TelephonyManager.CALL_STATE_OFFHOOK in all -> TelephonyManager.CALL_STATE_OFFHOOK
+      TelephonyManager.CALL_STATE_RINGING in all -> TelephonyManager.CALL_STATE_RINGING
+      else -> TelephonyManager.CALL_STATE_IDLE
+    }
+    if (phone == phoneState) return
+    phoneState = phone
+    onCallState(phone)
+  }
+
   private fun onCallState(state: Int) {
     val name = when (state) {
       TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
@@ -269,11 +299,13 @@ class DialerModule : Module() {
 
   private fun stopListening() {
     stopIncoming()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callback?.let { telephony.unregisterTelephonyCallback(it) }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) callbacks.forEach { (tm, cb) -> tm.unregisterTelephonyCallback(cb) }
     @Suppress("DEPRECATION")
-    legacyListener?.let { telephony.listen(it, PhoneStateListener.LISTEN_NONE) }
-    callback = null
-    legacyListener = null
+    legacyListeners.forEach { (tm, l) -> tm.listen(l, PhoneStateListener.LISTEN_NONE) }
+    callbacks.clear()
+    legacyListeners.clear()
+    simStates.clear()
+    phoneState = null
   }
 
   private fun phoneAccountFor(subId: Int): PhoneAccountHandle? {

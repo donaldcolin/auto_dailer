@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, LayoutAnimation, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
 import SettingsScreen from './SettingsScreen';
@@ -9,7 +9,7 @@ import Dialer from './modules/dialer';
 import { api, OFFLINE } from './lib/api';
 import { cached, remember } from './lib/cache';
 import { enqueue, flush, onOutboxProblem, waitingLeads } from './lib/outbox';
-import { loadPrefs } from './lib/prefs';
+import { loadPrefs, savePrefs } from './lib/prefs';
 import { syncRecordings, syncRecordingsSoon } from './lib/recordings';
 import { supabase } from './lib/supabase';
 import { Btn, card, colors, Skeleton, Toast, wordmark } from './ui';
@@ -99,6 +99,9 @@ export default function DialerScreen({ me }) {
   const [phase, setPhaseState] = useState('idle'); // idle | loading | countdown | calling | outcome | paused | done
   const [lead, setLead] = useState(null);
   const [queueInfo, setQueueInfo] = useState(null); // { count, source, rule, leads }
+  const [views, setViews] = useState(() => cached(`views-${me.email}`)); // [{ id, name }]: My leads + the Smart View tabs ("Dialer – …" Lists)
+  const [view, setViewState] = useState(loadPrefs().view || 'own');
+  const viewRef = useRef(view);
   const [tab, setTab] = useState(null); // 'pushed' | 'mine'; null = pushed when there are any
   const [countdown, setCountdown] = useState(COUNTDOWN_SEC);
   // Finger on the lead screen: the countdown waits, and carries on when it lifts.
@@ -139,7 +142,8 @@ export default function DialerScreen({ me }) {
   useEffect(() => {
     loadForm();
     // The last queue shows at once (leads already called are filtered by the server's reload and the outbox).
-    const lastQueue = cached(`queue-${me.email}`);
+    const lastQueue = cached(`queue-${me.email}-${viewRef.current}`);
+    loadViews();
     if (lastQueue) { queueRef.current = lastQueue; pending(); }
     PermissionsAndroid.requestMultiple(PERMISSIONS).then((res) => {
       const ok = PERMISSIONS.every((p) => res[p] === PermissionsAndroid.RESULTS.GRANTED);
@@ -179,7 +183,8 @@ export default function DialerScreen({ me }) {
     const appSub = AppState.addEventListener('change', (s) => {
       if (s !== 'active') return;
       setCanFront(Dialer.canBringToFront()); // re-check after returning from Settings
-      if (phaseRef.current === 'calling') finishCall(false);
+      // No call going on any more (some phones never report the end, iQOO 2026-11-14): finish it now.
+      if (phaseRef.current === 'calling') finishCall(!Dialer.isInCall());
       catchUpIncoming();
       setFilesAccess(Dialer.hasAllFilesAccess());
       syncRecordings();
@@ -270,16 +275,35 @@ export default function DialerScreen({ me }) {
 
   // skipCache: re-read LSQ on the server too (menu → Refresh leads), so a TL's new leads show at once.
   async function loadQueue(skipCache = false) {
-    const q = await api(skipCache ? '/api/queue?fresh=1' : '/api/queue');
+    const v = viewRef.current;
+    const q = await api(`/api/queue?view=${encodeURIComponent(v)}${skipCache ? '&fresh=1' : ''}`);
+    if (v !== viewRef.current) return pending(); // the person switched tabs while this loaded
+    // The tab's List was renamed or deleted: back to My leads.
+    if (v !== 'own' && q.source === 'own') { pickView('own', false); showToast('That view is gone; showing My leads'); }
     queueRef.current = { leads: q.leads, rule: q.rule, source: q.source };
-    remember(`queue-${me.email}`, queueRef.current);
+    remember(`queue-${me.email}-${viewRef.current}`, queueRef.current);
     return pending();
+  }
+
+  const loadViews = () => api('/api/queue/views').then((r) => { setViews(r.views); remember(`views-${me.email}`, r.views); }).catch(() => {});
+
+  // A Smart View tab, like in LSQ: remembered on the phone, its leads loaded at once.
+  function pickView(id, reload = true) {
+    viewRef.current = id;
+    setViewState(id);
+    savePrefs({ view: id });
+    if (!reload) return;
+    const last = cached(`queue-${me.email}-${id}`);
+    queueRef.current = last || { leads: [], rule: null, source: null };
+    if (last) pending(); else setQueueInfo(null);
+    loadQueue().catch((e) => setError(e.message));
   }
 
   async function refreshNow() {
     setMenuOpen(false);
     setRefreshing(true);
     try {
+      loadViews();
       const left = await loadQueue(true);
       setError(null);
       if (left.length && phaseRef.current === 'done') setPhase('idle');
@@ -518,8 +542,11 @@ export default function DialerScreen({ me }) {
   const left = queueInfo?.count ?? 0;
   const pushedLeads = (queueInfo?.leads || []).filter((l) => l.pushed);
   const myLeads = (queueInfo?.leads || []).filter((l) => !l.pushed);
-  const shownTab = tab || (pushedLeads.length ? 'pushed' : 'mine');
+  // A Smart View chip picked: the list is that view, so the Pushed / Your leads switch goes away until "All".
+  const inView = !!view && view !== 'own' && !!queueInfo && !queueInfo.rule;
+  const shownTab = inView ? 'mine' : tab || (pushedLeads.length ? 'pushed' : 'mine');
   const tabLeads = shownTab === 'pushed' ? pushedLeads : myLeads;
+  const showViews = views?.length > 1 && !!queueInfo && !queueInfo.rule && (shownTab === 'mine' || !left || phase === 'done');
   const status = {
     countdown: held ? 'Paused' : `Calling in ${countdown}`,
     calling: 'On call',
@@ -717,30 +744,6 @@ export default function DialerScreen({ me }) {
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
-          {queueInfo ? (
-            (phase === 'done' || !left) && (
-              <View style={styles.caughtUp}>
-                <Text style={styles.caughtUpTitle}>All caught up</Text>
-                <Text style={styles.muted}>No leads to call right now. New ones show up here; ☰ → Refresh leads checks at once.</Text>
-              </View>
-            )
-          ) : (
-            <View accessibilityLabel="Loading your leads">
-              <View style={styles.columns}>
-                <Skeleton style={{ flex: 1, height: 112, borderRadius: 16 }} />
-                <Skeleton style={{ flex: 1, height: 112, borderRadius: 16 }} />
-              </View>
-              <Skeleton style={{ width: 120, height: 14, marginTop: 28, marginBottom: 8 }} />
-              {[0, 1, 2, 3, 4].map((i) => (
-                <View key={i} style={styles.row}>
-                  <Skeleton style={{ flex: 1, height: 18, marginRight: 48 }} />
-                  <Skeleton style={{ width: 72, height: 14 }} />
-                </View>
-              ))}
-            </View>
-          )}
-          {queueInfo?.rule && <Text style={styles.muted}>From {queueInfo.rule.listName}, since {queueInfo.rule.startTime}</Text>}
-
           {!granted && <Text style={styles.notice}>Allow calls, phone state and call log to start dialing.</Text>}
           {formState === 'failed' && (
             <Text style={styles.notice}>
@@ -761,33 +764,57 @@ export default function DialerScreen({ me }) {
             </Text>
           )}
 
-          {phase !== 'done' && !!left && (
+          {queueInfo && !!left && phase !== 'done' && !inView && (
+            // Pushed leads are called first, then your leads: one switch shows either list.
+            <View style={styles.segment} accessibilityRole="tablist">
+              {[['pushed', 'Pushed with LSQ', pushedLeads.length], ['mine', 'Your leads', myLeads.length]].map(([key, label, n]) => (
+                <Pressable
+                  key={key}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: shownTab === key }}
+                  style={[styles.segItem, shownTab === key && styles.segItemOn]}
+                  onPress={() => setTab(key)}
+                >
+                  <Text style={[styles.segText, shownTab === key && styles.segTextOn]} numberOfLines={1}>{label}</Text>
+                  <Text style={[styles.segCount, shownTab === key && styles.segTextOn]}>{n}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {queueInfo?.rule && <Text style={[styles.muted, { marginTop: 12 }]}>From {queueInfo.rule.listName}, since {queueInfo.rule.startTime}</Text>}
+
+          {/* Your leads, filtered by the Smart View tabs. Pushed leads are never filtered. */}
+          {showViews && (
             <>
-              <View style={styles.columns} accessibilityRole="tablist">
-                {[
-                  ['pushed', 1, 'Pushed by your TL', pushedLeads.length, pushedLeads.length ? 'Called first' : 'None right now'],
-                  ['mine', 2, 'Your leads', myLeads.length, pushedLeads.length ? 'Called next, newest first' : 'Newest first'],
-                ].map(([key, rank, label, n, hint]) => (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.views} style={styles.viewsRow}>
+                {views.map((v) => (
                   <Pressable
-                    key={key}
+                    key={v.id}
                     accessibilityRole="tab"
-                    accessibilityState={{ selected: shownTab === key }}
-                    accessibilityLabel={`${rank}. ${label}, ${n} leads. ${hint}`}
-                    style={[styles.column, shownTab === key && styles.columnOn]}
-                    onPress={() => setTab(key)}
+                    accessibilityState={{ selected: v.id === view }}
+                    onPress={() => v.id !== view && pickView(v.id)}
+                    style={({ pressed }) => [styles.viewChip, v.id === view && styles.viewChipOn, pressed && v.id !== view && styles.pressed]}
                   >
-                    <View style={styles.columnTop}>
-                      <View style={[styles.rank, shownTab === key && styles.rankOn]}>
-                        <Text style={[styles.rankText, shownTab === key && styles.rankTextOn]}>{rank}</Text>
-                      </View>
-                      <Text style={[styles.columnCount, !n && styles.orderCountZero]}>{n}</Text>
-                    </View>
-                    <Text style={styles.orderLabel} numberOfLines={1}>{label}</Text>
-                    <Text style={styles.orderHint} numberOfLines={2}>{hint}</Text>
+                    <Text style={[styles.viewText, v.id === view && styles.viewTextOn]}>{v.id === 'own' ? 'All' : v.name}</Text>
                   </Pressable>
                 ))}
+              </ScrollView>
+            </>
+          )}
+
+          {queueInfo ? (
+            (phase === 'done' || !left) ? (
+              <View style={styles.caughtUp}>
+                <Text style={styles.caughtUpTitle}>All caught up</Text>
+                <Text style={styles.muted}>
+                  {view !== 'own' && !queueInfo.rule ? 'Nothing left in this view. Pick another above, or ' : 'No leads to call right now. '}
+                  ☰ → Refresh leads checks again.
+                </Text>
               </View>
-              <Text style={styles.listTitle}>{shownTab === 'pushed' ? 'Pushed by your TL' : 'Your leads'}</Text>
+            ) : (
+              <>
+                
               {tabLeads.slice(0, 50).map((l) => {
                 const d = Object.fromEntries((l.details || []).map((x) => [x.label, x.value]));
                 const calls = d.Calls?.replace(/^(\d+) made/, (_, n) => `${n} ${n === '1' ? 'call' : 'calls'}`);
@@ -803,8 +830,21 @@ export default function DialerScreen({ me }) {
                 );
               })}
               {tabLeads.length > 50 && <Text style={styles.more}>and {tabLeads.length - 50} more</Text>}
-              {!tabLeads.length && <Text style={styles.more}>None right now.</Text>}
-            </>
+                {tabLeads.length > 50 && <Text style={styles.more}>and {tabLeads.length - 50} more</Text>}
+                {!tabLeads.length && <Text style={styles.more}>None right now.</Text>}
+              </>
+            )
+          ) : (
+            <View accessibilityLabel="Loading your leads">
+              <Skeleton style={{ height: 44, borderRadius: 22 }} />
+              <Skeleton style={{ width: 120, height: 14, marginTop: 28, marginBottom: 8 }} />
+              {[0, 1, 2, 3, 4].map((i) => (
+                <View key={i} style={styles.row}>
+                  <Skeleton style={{ flex: 1, height: 18, marginRight: 48 }} />
+                  <Skeleton style={{ width: 72, height: 14 }} />
+                </View>
+              ))}
+            </View>
           )}
         </ScrollView>
       )}
@@ -863,10 +903,10 @@ const styles = StyleSheet.create({
   menuText: { fontSize: 17, color: colors.text },
   muted: { color: colors.muted, fontSize: 15 },
 
-  list: { paddingHorizontal: 24, paddingTop: 40, paddingBottom: 24 },
+  list: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
   count: { fontSize: 72, fontWeight: '300', color: colors.text, lineHeight: 80 },
   countLabel: { fontSize: 17, color: colors.text, marginBottom: 20 },
-  notice: { fontSize: 15, lineHeight: 22, color: colors.text, marginTop: 24 },
+  notice: { fontSize: 15, lineHeight: 22, color: colors.text, marginBottom: 20 },
   noticeLink: { textDecorationLine: 'underline' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   rowBody: { flex: 1, minWidth: 0, gap: 2 },
@@ -875,18 +915,6 @@ const styles = StyleSheet.create({
   rowAge: { fontSize: 13, color: colors.muted },
   caughtUp: { gap: 8, marginBottom: 24 },
   caughtUpTitle: { fontSize: 34, fontWeight: '300', color: colors.text },
-  columns: { flexDirection: 'row', gap: 12 },
-  column: { ...card, flex: 1, padding: 16, gap: 2 },
-  columnOn: { borderColor: colors.text, borderWidth: 1.5 },
-  columnTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  columnCount: { fontSize: 30, fontWeight: '300', color: colors.text, fontVariant: ['tabular-nums'] },
-  rank: { width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: '#C9CBD0', alignItems: 'center', justifyContent: 'center' },
-  rankOn: { backgroundColor: colors.text, borderColor: colors.text },
-  rankText: { fontSize: 14, fontWeight: '600', color: colors.muted },
-  rankTextOn: { color: colors.bg },
-  orderLabel: { fontSize: 17, fontWeight: '600', color: colors.text },
-  orderHint: { fontSize: 13, color: colors.muted, marginTop: 2 },
-  orderCountZero: { color: colors.muted },
   listTitle: { fontSize: 13, color: colors.muted, marginTop: 24, marginBottom: 2 },
   more: { fontSize: 15, color: colors.muted, paddingVertical: 16 },
 
@@ -899,6 +927,18 @@ const styles = StyleSheet.create({
   bannerHint: { fontSize: 13, color: colors.muted },
   callPhone: { fontSize: 18, color: colors.text, fontVariant: ['tabular-nums'] },
   tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  viewsRow: { marginHorizontal: -24, marginTop: 16, marginBottom: 4, flexGrow: 0 },
+  segment: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4, borderRadius: 24, backgroundColor: '#F2F2F2' },
+  segItem: { flex: 1, minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 12, borderRadius: 20 },
+  segItemOn: { backgroundColor: colors.bg, elevation: 1 },
+  segText: { fontSize: 14, color: colors.muted },
+  segCount: { fontSize: 14, color: colors.muted, fontVariant: ['tabular-nums'] },
+  segTextOn: { color: colors.text, fontWeight: '600' },
+  views: { gap: 8, paddingHorizontal: 24 },
+  viewChip: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 20, backgroundColor: '#F2F2F2' },
+  viewChipOn: { backgroundColor: colors.text },
+  viewText: { fontSize: 14, color: colors.text },
+  viewTextOn: { color: colors.bg, fontWeight: '600' },
   tag: { fontSize: 13, color: colors.text, backgroundColor: '#F2F2F2', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, overflow: 'hidden' },
   tagOn: { color: colors.bg, backgroundColor: colors.text },
   history: { marginTop: 28, gap: 4 },
