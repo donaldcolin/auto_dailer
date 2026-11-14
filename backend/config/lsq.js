@@ -1,34 +1,39 @@
 require('dotenv').config();
 const axios = require('axios');
 
-// Org-wide LeadSquared limit: at most 5 requests started per rolling second.
-// shortcut: per-process counter, fine with pm2 instances: 1; needs a shared store if Node is scaled out.
-const LSQ_MAX_PER_SEC = 5;
-const LSQ_WINDOW_MS = 1100; // 10% margin so network jitter can't squeeze 6 into LSQ's 1s window
-let _recentStarts = [];
+// LeadSquared's limits, measured 2026-11-14 with the org key: lead reads (Leads.Get, Leads.GetById,
+// Leads/Retrieve/…) allow 15 per 5 s; other APIs allow more (LeadsMetaData.Get took 29 before refusing).
+// So lead reads get their own lane of 3 per 1.1 s (at most 15 in any 5 s), and everything shares 5 per 1.1 s.
+// shortcut: per-process counters, fine with one backend instance; needs a shared store if Node is scaled out.
+const WINDOW_MS = 1100; // 10% margin so network jitter can't squeeze one more into LSQ's window
+const lane = max => ({ max, starts: [] });
+const ALL = lane(5);
+const LEAD_READS = lane(3);
+const isLeadRead = url => /LeadManagement\.svc\/Leads[./]/.test(url || '');
 
-async function waitForLsqSlot() {
+async function waitForSlot(l) {
   const start = Date.now();
   for (;;) {
     const now = Date.now();
-    _recentStarts = _recentStarts.filter(t => now - t < LSQ_WINDOW_MS);
-    if (_recentStarts.length < LSQ_MAX_PER_SEC) {
-      _recentStarts.push(now);
-      if (now - start > 1000) console.log(`[lsq] waited ${now - start}ms for a slot`); // the org-wide 5/s is the bottleneck
+    l.starts = l.starts.filter(t => now - t < WINDOW_MS);
+    if (l.starts.length < l.max) {
+      l.starts.push(now);
+      if (now - start > 1000) console.log(`[lsq] waited ${now - start}ms for a slot (${l.max}/s lane)`);
       return;
     }
-    await new Promise(r => setTimeout(r, LSQ_WINDOW_MS - (now - _recentStarts[0])));
+    await new Promise(r => setTimeout(r, WINDOW_MS - (now - l.starts[0])));
   }
 }
 
-// Every LSQ call goes through this client so the limit covers scanner, UI and search together.
+// Every LSQ call goes through this client so the limits cover queue, history and saves together.
 const lsqClient = axios.create({ timeout: 10000 });
 lsqClient.interceptors.request.use(async (config) => {
-  await waitForLsqSlot();
+  if (isLeadRead(config.url)) await waitForSlot(LEAD_READS);
+  await waitForSlot(ALL);
   return config;
 });
 
-// Some LSQ APIs also allow only 15 calls per 5 seconds (Leads.Get, Leads.GetById…). When LSQ says so (HTTP 429),
+// If LSQ still refuses (HTTP 429: another system on the same limit, such as the QC app),
 // wait out its window and try again, up to twice, instead of failing the caller's request.
 const RETRY_429_MS = 5500;
 lsqClient.interceptors.response.use(undefined, async (err) => {
@@ -53,6 +58,7 @@ function lsqUrl(path) {
 }
 
 module.exports = {
+  isLeadRead,
   lsqClient,
   lsqParams,
   lsqUrl
