@@ -205,4 +205,18 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
   };
 }
 
-module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, getListLeads, getOwnedLeads, ownQueue, readList };
+// How many leads each view would give right now (own leads with a phone, not dialed today): the counts on the app's chips.
+async function viewCounts(profile, now = new Date()) {
+  const { data: dialed, error } = await supabase.from('dial_attempts').select('prospect_id')
+    .eq('user_id', profile.id).gte('started_at', istNow(now).midnightIso).is('rule_id', null);
+  if (error) throw error;
+  const done = new Set(dialed.map(d => d.prospect_id));
+  const count = leads => ownQueue(leads, profile.lsq_user_id, done).length;
+  const counts = await Promise.all([
+    getOwnedLeads(profile).then(leads => ['own', count(leads)]),
+    ...views.listViews().map(v => views.viewRows(profile, v.id, { columns: COLUMNS, now }).then(rows => [v.id, count(rows.map(toLead))])),
+  ]);
+  return Object.fromEntries(counts);
+}
+
+module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, viewCounts, getListLeads, getOwnedLeads, ownQueue, readList };

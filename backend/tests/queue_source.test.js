@@ -23,7 +23,7 @@ jest.mock('../config/supabase', () => {
 });
 const { lsqClient } = require('../config/lsq');
 const { activeRuleFor } = require('../services/rules');
-const { getQueue } = require('../services/queue');
+const { getQueue, viewCounts } = require('../services/queue');
 
 // Each test uses its own LSQ user id, so the per-owner cache never leaks between tests.
 // Pushes are cached for a minute across users, so they're set once for the whole file.
@@ -213,5 +213,14 @@ describe("views: a Smart View tab, worked out from the person's own leads (servi
     expect((await getQueue({ ...sales(23), mode: 'hr' }, new Date(), { view: 'open-to-call' })).source).toBe('own');
     activeRuleFor.mockResolvedValue({ id: 'r9', list_id: 'list9', list_name: 'Dialer – Callback', start_time: '16:00:00' });
     expect((await getQueue(sales(22), new Date(), { view: 'assigned-today' })).source).toBe('rule');
+  });
+
+  test('chip counts: per view, own leads with a phone, minus those dialed today', async () => {
+    owned = [{ ProspectID: 'o1', OwnerId: 'L40', Mobile: '1', ProspectStage: 'New Lead' }, { ProspectID: 'o2', OwnerId: 'L40', Mobile: '2', ProspectStage: 'New Lead' }];
+    mockDialRows = [{ prospect_id: 'o2' }];
+    views.viewRows.mockImplementation(async (p, id) => (id === 'open-to-call'
+      ? [{ ProspectID: 'o1', OwnerId: 'L40', Mobile: '1' }, { ProspectID: 'o2', OwnerId: 'L40', Mobile: '2' }, { ProspectID: 'x', OwnerId: 'L40' }]
+      : []));
+    expect(await viewCounts(sales(40))).toEqual({ own: 1, 'assigned-today': 0, 'open-to-call': 1 });
   });
 });

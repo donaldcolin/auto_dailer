@@ -1,6 +1,6 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
-const { getQueue } = require('../services/queue');
+const { getQueue, viewCounts } = require('../services/queue');
 const { listViews } = require('../services/views');
 
 const router = express.Router();
@@ -18,8 +18,17 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // The views to pick from: "My leads" plus, for sales, the Smart View tabs in LSQ's order (services/views.js).
-router.get('/views', requireAuth, (req, res) => {
-  res.json({ views: [{ id: 'own', name: 'My leads' }, ...(req.profile.mode === 'sales' ? listViews() : [])] });
+// ?counts=1 adds each one's lead count; slower the first time (a person's tasks), so the app asks for names first.
+router.get('/views', requireAuth, async (req, res) => {
+  const list = [{ id: 'own', name: 'My leads' }, ...(req.profile.mode === 'sales' ? listViews() : [])];
+  if (req.query.counts !== '1' || list.length === 1) return res.json({ views: list });
+  try {
+    const counts = await viewCounts(req.profile);
+    res.json({ views: list.map(v => ({ ...v, count: counts[v.id] })) });
+  } catch (err) {
+    console.error('[views]', err.response?.data?.ExceptionMessage || err.message);
+    res.status(502).json({ error: 'Could not count your leads' });
+  }
 });
 
 module.exports = router;
