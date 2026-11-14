@@ -83,7 +83,7 @@ test('no rule: every lead the caller owns, minus closed stages and ones dialed t
   expect(q.source).toBe('own');
   expect(q.rule).toBeNull();
   expect(q.pushedCount).toBe(0);
-  expect(q.leads).toEqual([{ prospectId: 'p1', name: 'A', phone: '900', stage: 'New Lead', details: [] }]);
+  expect(q.leads).toEqual([{ prospectId: 'p1', name: 'A', phone: '900', stage: 'New Lead', details: [], lastCall: null, calls: 0, picked: 0 }]);
   expect(mockCalls).toContainEqual(['is', 'rule_id', null]);
 });
 

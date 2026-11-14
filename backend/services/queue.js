@@ -10,7 +10,7 @@ const PUSH_CACHE_MS = 60 * 1000; // a TL's push reaches the queue within a minut
 const PAGE_SIZE = 200;
 // Shown on the call screen when filled (picked from HR leads, 2026-11-04; LSQ lead fields are org-wide).
 const DETAIL_COLUMNS = 'Source,SourceMedium,mx_District,mx_State,mx_Total_Calls,mx_Total_Connects,mx_Last_Spoken_On,LeadAge';
-const COLUMNS = `ProspectID,FirstName,LastName,Phone,Mobile,ProspectStage,OwnerId,${DETAIL_COLUMNS}`;
+const COLUMNS = `ProspectID,FirstName,LastName,Phone,Mobile,ProspectStage,OwnerId,mx_Last_Attempted_On,${DETAIL_COLUMNS}`;
 // Converted or ruled-out leads: never in the default queue. A TL rule can still target them on purpose.
 const SKIP_BY_DEFAULT = new Set(['Signup Done', 'Payment Done', 'Customer', 'Disqualified']);
 // HR keeps every candidate in one stage ("HR New Lead") and records outcomes in HR Activity, so its default
@@ -58,6 +58,9 @@ const toLead = row => {
     stage: p.ProspectStage,
     ownerId: p.OwnerId,
     connects: Number(p.mx_Total_Connects) || 0,
+    // For the list row: when it was last dialed (UTC ISO, or null), how many calls, how many picked up.
+    lastCall: p.mx_Last_Attempted_On ? `${String(p.mx_Last_Attempted_On).slice(0, 19).replace(' ', 'T')}Z` : null,
+    calls: Number(p.mx_Total_Calls) || 0,
     details: details(p),
   };
 };
@@ -201,7 +204,7 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
     view: viewInfo,
     rule: rule && { id: rule.id, listName: rule.list_name, startTime: String(rule.start_time).slice(0, 5) },
     pushedCount: pushed.length,
-    leads: [...pushed, ...rest].map(({ ownerId, connects, ...lead }) => lead),
+    leads: [...pushed, ...rest].map(({ ownerId, connects, ...lead }) => ({ ...lead, picked: connects })),
   };
 }
 
