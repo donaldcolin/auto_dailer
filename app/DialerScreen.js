@@ -88,6 +88,20 @@ const pretty = (phone) => dialable(phone).replace(/^(\+91)?(\d{5})(\d{5})$/, (_,
  * The caller always marks their team's LSQ activity: one tap on a reason, or the form after a connected call.
  * Every lead dialed or skipped is saved, so the next /api/queue no longer returns it.
  */
+// When a lead was last dialed, short: "Just now", "25 min ago", "Today, 7:12 pm", "Yesterday", "3 days ago", "4 Nov".
+function ago(iso, now = Date.now()) {
+  const t = new Date(iso);
+  const min = Math.round((now - t) / 60000);
+  if (min < 1) return 'Just now';
+  if (min < 60) return `${min} min ago`;
+  const day = (d) => new Date(d).toDateString();
+  if (day(t) === day(now)) return `Today, ${t.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}`;
+  if (day(t) === day(now - 86400000)) return 'Yesterday';
+  const days = Math.floor((now - t) / 86400000);
+  if (days < 7) return `${days} days ago`;
+  return t.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+
 export default function DialerScreen({ me }) {
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(null); // null | 'menu' | 'chooseSim' (first call on a dual-SIM phone)
@@ -865,16 +879,21 @@ export default function DialerScreen({ me }) {
               <>
                 
               {tabLeads.slice(0, 50).map((l) => {
-                const d = Object.fromEntries((l.details || []).map((x) => [x.label, x.value]));
-                const calls = d.Calls?.replace(/^(\d+) made/, (_, n) => `${n} ${n === '1' ? 'call' : 'calls'}`);
-                const about = [d.Source?.split(',')[0], d.Location?.split(',')[0], calls].filter(Boolean).join(', ');
+                const calls = l.calls || 0;
+                const about = calls ? `${calls} ${calls === 1 ? 'call' : 'calls'} · ${l.picked || 0} picked` : 'No calls yet';
+                const last = l.lastCall && ago(l.lastCall);
                 return (
-                  <View key={l.prospectId} style={styles.row}>
+                  <View key={l.prospectId} style={styles.row} accessible accessibilityLabel={`${l.name || 'No name'}, ${about}${last ? `, last call ${last}` : ''}`}>
                     <View style={styles.rowBody}>
                       <Text style={styles.rowName} numberOfLines={1}>{l.name || 'No name'}</Text>
-                      <Text style={styles.rowAbout} numberOfLines={1}>{about || l.stage}</Text>
+                      <Text style={styles.rowAbout} numberOfLines={1}>{about}</Text>
                     </View>
-                    {!!d['Lead age'] && <Text style={styles.rowAge}>{d['Lead age']}</Text>}
+                    {!!last && (
+                      <View style={styles.rowRight}>
+                        <Text style={styles.rowLabel}>Last call</Text>
+                        <Text style={styles.rowAge}>{last}</Text>
+                      </View>
+                    )}
                   </View>
                 );
               })}
@@ -967,7 +986,9 @@ const styles = StyleSheet.create({
   rowBody: { flex: 1, minWidth: 0, gap: 2 },
   rowName: { fontSize: 17, color: colors.text },
   rowAbout: { fontSize: 13, color: colors.muted },
-  rowAge: { fontSize: 13, color: colors.muted },
+  rowRight: { alignItems: 'flex-end', gap: 2, marginLeft: 12 },
+  rowLabel: { fontSize: 11, color: colors.muted },
+  rowAge: { fontSize: 13, color: colors.text, fontVariant: ['tabular-nums'] },
   caughtUp: { gap: 8, marginBottom: 24 },
   caughtUpTitle: { fontSize: 34, fontWeight: '300', color: colors.text },
   listTitle: { fontSize: 13, color: colors.muted, marginTop: 24, marginBottom: 2 },
