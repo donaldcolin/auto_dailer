@@ -285,7 +285,18 @@ export default function DialerScreen({ me }) {
     return pending();
   }
 
-  const loadViews = () => api('/api/queue/views').then((r) => { setViews(r.views); remember(`views-${me.email}`, r.views); }).catch(() => {});
+  // Names first (instant), then the lead counts on each chip (a person's first count reads their tasks: a few seconds).
+  const loadViews = () => {
+    const show = (list) => { setViews(list); remember(`views-${me.email}`, list); };
+    api('/api/queue/views').then((r) => {
+      setViews((old) => r.views.map((v) => ({ ...v, count: old?.find((o) => o.id === v.id)?.count })));
+      return api('/api/queue/views?counts=1');
+    }).then((r) => show(r.views)).catch(() => {});
+  };
+  // The open chip stays in sight, a little in from the left edge.
+  const chipsRef = useRef(null);
+  const chipX = useRef({});
+  const scrollToChip = (id) => chipsRef.current?.scrollTo({ x: Math.max(0, (chipX.current[id] ?? 0) - 24), animated: true });
 
   // A Smart View tab, like in LSQ: remembered on the phone, its leads loaded at once.
   function pickView(id, reload = true) {
@@ -327,6 +338,7 @@ export default function DialerScreen({ me }) {
 
   // Reload the list only; dialing always waits for Start.
   async function refresh() {
+    if (views?.length > 1) api('/api/queue/views?counts=1').then((r) => { setViews(r.views); remember(`views-${me.email}`, r.views); }).catch(() => {});
     const left = await loadQueue();
     setError((e) => (e?.includes(OFFLINE) ? null : e)); // back online
     if (left.length && phaseRef.current === 'done') setPhase('idle');
@@ -788,18 +800,31 @@ export default function DialerScreen({ me }) {
           {/* Your leads, filtered by the Smart View tabs. Pushed leads are never filtered. */}
           {showViews && (
             <>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.views} style={styles.viewsRow}>
-                {views.map((v) => (
-                  <Pressable
-                    key={v.id}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: v.id === view }}
-                    onPress={() => v.id !== view && pickView(v.id)}
-                    style={({ pressed }) => [styles.viewChip, v.id === view && styles.viewChipOn, pressed && v.id !== view && styles.pressed]}
-                  >
-                    <Text style={[styles.viewText, v.id === view && styles.viewTextOn]}>{v.id === 'own' ? 'All' : v.name}</Text>
-                  </Pressable>
-                ))}
+              <ScrollView ref={chipsRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.views} style={styles.viewsRow}>
+                {views.map((v) => {
+                  const on = v.id === view;
+                  // The open view counts what's on screen; the others, the server's count (missing until it arrives).
+                  const n = on && queueInfo ? myLeads.length : v.count;
+                  const label = v.id === 'own' ? 'All' : v.name;
+                  return (
+                    <Pressable
+                      key={v.id}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected: on }}
+                      accessibilityLabel={n == null ? label : `${label}, ${n} ${n === 1 ? 'lead' : 'leads'}`}
+                      onLayout={(e) => { chipX.current[v.id] = e.nativeEvent.layout.x; if (on) scrollToChip(v.id); }}
+                      onPress={() => { if (!on) { pickView(v.id); scrollToChip(v.id); } }}
+                      style={({ pressed }) => [styles.viewChip, on && styles.viewChipOn, pressed && !on && styles.pressed]}
+                    >
+                      <Text style={[styles.viewText, on && styles.viewTextOn]}>{label}</Text>
+                      {n != null && (
+                        <View style={[styles.viewCount, on && styles.viewCountOn]}>
+                          <Text style={[styles.viewCountText, on && styles.viewCountTextOn]}>{n}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}
               </ScrollView>
             </>
           )}
@@ -936,10 +961,15 @@ const styles = StyleSheet.create({
   segCount: { fontSize: 14, color: colors.muted, fontVariant: ['tabular-nums'] },
   segTextOn: { color: colors.text, fontWeight: '600' },
   views: { gap: 8, paddingHorizontal: 24 },
-  viewChip: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 20, backgroundColor: '#F2F2F2' },
+  viewChip: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 14, paddingRight: 8, borderRadius: 20, backgroundColor: '#F2F2F2' },
   viewChipOn: { backgroundColor: colors.text },
   viewText: { fontSize: 14, color: colors.text },
-  viewTextOn: { color: colors.bg, fontWeight: '600' },
+  viewTextOn: { color: colors.bg, fontWeight: '700' },
+  // Count badge: grey on a grey chip; white with black figures on the open (black) chip, so the number stands out.
+  viewCount: { minWidth: 24, height: 24, paddingHorizontal: 7, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E2E2E2' },
+  viewCountOn: { backgroundColor: colors.bg },
+  viewCountText: { fontSize: 13, fontWeight: '600', color: '#555', fontVariant: ['tabular-nums'] },
+  viewCountTextOn: { color: colors.text, fontWeight: '700' },
   tag: { fontSize: 13, color: colors.text, backgroundColor: '#F2F2F2', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, overflow: 'hidden' },
   tagOn: { color: colors.bg, backgroundColor: colors.text },
   history: { marginTop: 28, gap: 4 },
