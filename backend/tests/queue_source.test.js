@@ -217,6 +217,26 @@ describe('views: a Smart View tab mirrored by a "Dialer – …" List', () => {
     expect((await getQueue({ id: 'u22', lsq_user_id: 'L22', groups: [] }, new Date(), { view: 'lv1' })).source).toBe('rule');
   });
 
+  test("LSQ refuses the person's key for the admin's List: read once with the org key, still only their leads", async () => {
+    activeRuleFor.mockResolvedValue(null);
+    listRows = [lp('w1', 'L30'), lp('w2', 'L99')];
+    const real = lsqClient.post.getMockImplementation();
+    lsqClient.post.mockImplementation(async (url, body, opts) => {
+      if (opts?.headers) throw Object.assign(new Error('500'), { response: { data: { ExceptionMessage: 'Either list ID `lv1` is invalid or you don’t have access to the list.' } } });
+      return real(url, body, opts);
+    });
+    try {
+      const q = await getQueue({ id: 'u30', lsq_user_id: 'L30', groups: [] }, new Date(), { view: 'lv1', fresh: true });
+      expect(q.leads.map(l => l.prospectId)).toEqual(['w1']);
+      expect(listReads.at(-1).headers).toBeUndefined();
+      const before = listReads.length;
+      await getQueue({ id: 'u30', lsq_user_id: 'L30', groups: [] }, new Date(), { view: 'lv1', fresh: true });
+      expect(listReads.length).toBe(before); // no second refused try, and the org read is cached
+    } finally {
+      lsqClient.post.mockImplementation(real);
+    }
+  });
+
   test('no personal key: asked to add it, never read with the admin key', async () => {
     activeRuleFor.mockResolvedValue(null);
     mockKeys.value = null;

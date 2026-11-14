@@ -103,8 +103,23 @@ async function getViewLeads(profile, listId, fresh) {
   if (fresh) _cache.delete(key);
   const keys = await lsqKeys.getKeys(profile.id);
   if (!keys) throw noKey();
-  return cached(key, () => readList(listId, { keys, sortOn: 'ModifiedOn', maxPages: MAX_PAGES }), VIEW_CACHE_MS);
+  const denied = `${profile.id}:${listId}`;
+  if ((_deniedUntil.get(denied) || 0) <= Date.now()) {
+    try {
+      return await cached(key, () => readList(listId, { keys, sortOn: 'ModifiedOn', maxPages: MAX_PAGES }), VIEW_CACHE_MS);
+    } catch (err) {
+      if (!NO_ACCESS.test(err.response?.data?.ExceptionMessage || '')) throw err;
+      _deniedUntil.set(denied, Date.now() + 10 * 60 * 1000); // don't spend a lead read asking again every refresh
+    }
+  }
+  // LSQ keeps a List to its creator (the admin), so a sales key is refused (seen 2026-11-14). Read it once with the
+  // org key for everyone; ownQueue keeps the caller's own leads.
+  // shortcut: only the ORG_VIEW_PAGES newest-changed pages, so in huge Lists someone's older leads are missed; sharing the List in LSQ lifts this.
+  return cached(`viewall:${listId}`, () => readList(listId, { sortOn: 'ModifiedOn', maxPages: ORG_VIEW_PAGES }), VIEW_CACHE_MS);
 }
+const NO_ACCESS = /don.t have access to the list/i;
+const ORG_VIEW_PAGES = 30;
+const _deniedUntil = new Map();
 
 // The newest leads an LSQ user owns that `keep` accepts and that have a phone, up to MAX_QUEUE.
 async function readOwnedLeads(lsqUserId, keep) {
