@@ -4,12 +4,13 @@ const axios = require('axios');
 // LeadSquared's limits, measured 2026-11-14 with the org key: lead reads (Leads.Get, Leads.GetById,
 // Leads/Retrieve/…) allow 15 per 5 s; other APIs allow more (LeadsMetaData.Get took 29 before refusing).
 // So lead reads get their own lane of 3 per 1.1 s (at most 15 in any 5 s), and everything shares 5 per 1.1 s.
+// Activity advanced search returned 429s at 5 per 1.1 s (2026-11-14), so it shares the slow lane.
 // shortcut: per-process counters, fine with one backend instance; needs a shared store if Node is scaled out.
 const WINDOW_MS = 1100; // 10% margin so network jitter can't squeeze one more into LSQ's window
 const lane = max => ({ max, starts: [] });
 const ALL = lane(5);
 const LEAD_READS = lane(3);
-const isLeadRead = url => /LeadManagement\.svc\/Leads[./]/.test(url || '');
+const isLeadRead = url => /LeadManagement\.svc\/Leads[./]|Activity\/Retrieve\/BySearchParameter/.test(url || '');
 
 async function waitForSlot(l) {
   const start = Date.now();

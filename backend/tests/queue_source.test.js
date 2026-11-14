@@ -1,6 +1,8 @@
 jest.mock('../config/lsq', () => ({ lsqClient: { post: jest.fn(), get: jest.fn() }, lsqUrl: p => p, lsqParams: () => ({ host: 'https://lsq' }) }));
-const mockKeys = { value: { accessKey: 'ak', secretKey: 'sk' } };
-jest.mock('../services/lsq_keys', () => ({ getKeys: async () => mockKeys.value, keyHeaders: k => ({ key: k.accessKey }) }));
+jest.mock('../services/views', () => ({
+  listViews: () => [{ id: 'assigned-today', name: 'Leads assigned today' }, { id: 'open-to-call', name: 'Open lead to be called' }],
+  viewRows: jest.fn(),
+}));
 jest.mock('../services/rules', () => ({
   activeRuleFor: jest.fn(),
   istNow: () => ({ midnightIso: '2026-11-03T00:00:00+05:30' }),
@@ -191,56 +193,25 @@ test('if LSQ refuses the pushed leads, the normal queue still loads', async () =
 });
 
 
-describe('views: a Smart View tab mirrored by a "Dialer – …" List', () => {
-  const lp = (id, owner) => ({ LeadPropertyList: [{ Attribute: 'ProspectID', Value: id }, { Attribute: 'OwnerId', Value: owner }, { Attribute: 'Mobile', Value: '1' }] });
-  beforeEach(() => { listReads.length = 0; mockKeys.value = { accessKey: 'ak', secretKey: 'sk' }; });
+describe("views: a Smart View tab, worked out from the person's own leads (services/views.js)", () => {
+  const views = require('../services/views');
+  const sales = (n) => ({ id: `u${n}`, lsq_user_id: `L${n}`, groups: [], mode: 'sales' });
 
-  test('views come in the Smart Views order, prefix removed', async () => {
-    const { getViews } = require('../services/queue');
-    expect(await getViews()).toEqual([{ id: 'lv1', name: 'Leads assigned today' }, { id: 'lv2', name: 'Open lead to be called' }]);
-  });
-
-  test("the List is read with the person's own key, newest change first, and still only their leads", async () => {
+  test("a sales person's view: its rows, still only their own leads with a phone", async () => {
     activeRuleFor.mockResolvedValue(null);
-    listRows = [lp('v1', 'L20'), lp('v2', 'L99')];
-    const q = await getQueue({ id: 'u20', lsq_user_id: 'L20', groups: [] }, new Date(), { view: 'lv2' });
+    views.viewRows.mockResolvedValue([{ ProspectID: 'v1', OwnerId: 'L20', Mobile: '1' }, { ProspectID: 'v2', OwnerId: 'L99', Mobile: '2' }]);
+    const q = await getQueue(sales(20), new Date(), { view: 'open-to-call' });
     expect(q.source).toBe('view');
-    expect(q.view).toEqual({ id: 'lv2', name: 'Open lead to be called' });
+    expect(q.view).toEqual({ id: 'open-to-call', name: 'Open lead to be called' });
     expect(q.leads.map(l => l.prospectId)).toEqual(['v1']);
-    expect(listReads[0]).toMatchObject({ url: 'https://lsq/LeadManagement.svc/Leads/Retrieve/BySearchParameter', sort: 'ModifiedOn', headers: { key: 'ak' } });
+    expect(views.viewRows.mock.calls.at(-1)[1]).toBe('open-to-call');
   });
 
-  test('an unknown view falls back to their own leads; a running rule wins over a view', async () => {
+  test('an unknown view or an HR person falls back to their own leads; a running rule wins over a view', async () => {
     activeRuleFor.mockResolvedValue(null);
-    expect((await getQueue({ id: 'u21', lsq_user_id: 'L21', groups: [] }, new Date(), { view: 'gone' })).source).toBe('own');
+    expect((await getQueue(sales(21), new Date(), { view: 'lv2' })).source).toBe('own');
+    expect((await getQueue({ ...sales(23), mode: 'hr' }, new Date(), { view: 'open-to-call' })).source).toBe('own');
     activeRuleFor.mockResolvedValue({ id: 'r9', list_id: 'list9', list_name: 'Dialer – Callback', start_time: '16:00:00' });
-    expect((await getQueue({ id: 'u22', lsq_user_id: 'L22', groups: [] }, new Date(), { view: 'lv1' })).source).toBe('rule');
-  });
-
-  test("LSQ refuses the person's key for the admin's List: read once with the org key, still only their leads", async () => {
-    activeRuleFor.mockResolvedValue(null);
-    listRows = [lp('w1', 'L30'), lp('w2', 'L99')];
-    const real = lsqClient.post.getMockImplementation();
-    lsqClient.post.mockImplementation(async (url, body, opts) => {
-      if (opts?.headers) throw Object.assign(new Error('500'), { response: { data: { ExceptionMessage: 'Either list ID `lv1` is invalid or you don’t have access to the list.' } } });
-      return real(url, body, opts);
-    });
-    try {
-      const q = await getQueue({ id: 'u30', lsq_user_id: 'L30', groups: [] }, new Date(), { view: 'lv1', fresh: true });
-      expect(q.leads.map(l => l.prospectId)).toEqual(['w1']);
-      expect(listReads.at(-1).headers).toBeUndefined();
-      const before = listReads.length;
-      await getQueue({ id: 'u30', lsq_user_id: 'L30', groups: [] }, new Date(), { view: 'lv1', fresh: true });
-      expect(listReads.length).toBe(before); // no second refused try, and the org read is cached
-    } finally {
-      lsqClient.post.mockImplementation(real);
-    }
-  });
-
-  test('no personal key: asked to add it, never read with the admin key', async () => {
-    activeRuleFor.mockResolvedValue(null);
-    mockKeys.value = null;
-    await expect(getQueue({ id: 'u23', lsq_user_id: 'L23', groups: [] }, new Date(), { view: 'lv1' })).rejects.toMatchObject({ status: 422 });
-    expect(listReads).toHaveLength(0);
+    expect((await getQueue(sales(22), new Date(), { view: 'assigned-today' })).source).toBe('rule');
   });
 });

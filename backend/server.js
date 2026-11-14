@@ -38,7 +38,10 @@ app.use((err, req, res, next) => {
 
 if (require.main === module) {
   const port = process.env.PORT || 4000;
-  app.listen(port, () => console.log(`Dialer backend on :${port}`));
+  app.listen(port, () => {
+    console.log(`Dialer backend on :${port}`);
+    require('./services/views').warm();
+  });
 }
 
 module.exports = app;

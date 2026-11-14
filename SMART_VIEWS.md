@@ -1,64 +1,68 @@
-# Sales Smart Views, mirrored as dialer Lists
+# Sales Smart Views in the dialer
 
-Read from LSQ on 2026-11-14 (Smart View tab settings, created by Tejas N and shared to sales). LeadSquared has no API for Smart Views, so each tab becomes a **dynamic List** named `Dialer – <tab name>` with the same conditions. The dialer reads the List and keeps only the caller's own leads.
+The sales Smart View tabs (created by Tejas N, shared to all of sales, read from LSQ on 2026-11-14) appear in the app as chips under "Your leads". LeadSquared has no API for Smart Views, so **the dialer works each tab out itself** in `backend/services/views.js`.
 
-## How to build each List in LSQ
-1. Go to Leads → Manage Leads → Advanced Search, and add the conditions listed for the tab below.
-2. Save the search as a **dynamic** List named exactly `Dialer – <tab name>`.
-3. **Leave out any Lead Owner condition.** The dialer filters each person's own leads itself.
-4. **Wherever a condition says "BDA Activity (218)", add the same condition for "Auto Dailer - BDA activity (286)".** Sales has saved calls to 286 since 2026-11-14, so a rule that only looks at 218 misses every call marked in the dialer. The field names are the same in 286; only their internal numbers differ.
+## Why not Lists
+Tried first (2026-11-14) and dropped:
+- A List can't be limited to "the current user", so each one is org-wide. "Open lead to be called" was 377,796 leads and "Leads without Task" about 254K. Reading one person's leads out of that isn't possible in time.
+- Sales users' own keys can't read a List an admin made (LSQ: "you don't have access to the list").
 
-Every tab sorts by **Modified On, newest first**. The dialer uses the same order.
+The `Dialer – …` Lists made for this aren't used any more and can be deleted.
 
-Two conditions repeat across several tabs:
-- **Disposition (open)**: Lead Disposition is not Not Interested, Future Lead, Disqualified, Non-eligible stream or Financial Constraint lead.
-- **Not called today**: the lead has no Outbound Phone Call Activity (22) with Start Time today.
+## How it works
+For each person:
+1. **Their own leads,** newest change first: `Leads.Get` by owner, up to 4,000, cached 2 minutes.
+2. **Shared facts for the whole org,** read with LSQ's activity advanced search:
+   - BDA facts, cached 15 minutes: Demo Conducted, Hostelier, Hindi Medium and "Not interested" from 218 **and 286**, plus Application Status (266) Completed.
+   - Leads with an Outbound Phone Call (22) today, cached 2 minutes.
+   - Both are warmed at server start. After that, an expired copy is served while a fresh one loads, so nobody waits.
+3. **Their tasks:** open tasks cached 2 minutes; completed tasks cached 30 minutes, needed only for "Leads without Task".
+
+Switching tabs then takes well under a second.
+
+Field numbers differ between 218 and 286 (same labels):
+
+| Field | 218 | 286 |
+|---|---|---|
+| Activity Type | c1 | c1 |
+| Student Grade | c3 | c2 |
+| How was the session | c17 | c13 |
 
 ## The 8 tabs
+**Disposition (open)** means Lead Disposition is not Not Interested, Future Lead, Disqualified, Non-eligible stream or Financial Constraint lead.
 
-### 1. Leads assigned today
-- Owner was assigned **today**. In LSQ this is "to the current user"; in the List, use "Owner changed today", and the dialer keeps only the caller's leads.
+1. **Leads assigned today:** Owner Assigned Date and Time is today. LSQ stores this field in IST, not UTC.
+2. **Pending follow up for today:** an open task due later today. One already past due is "overdue" in LSQ.
+3. **Lead with zero connect:**
+   - Disposition (open).
+   - Total Connects = 0 and Total Calls ≤ 25.
+   - No outbound call today.
+4. **Demo conducted not registered:**
+   - Has a 218/286 with Activity Type = Demo Conducted.
+   - No 266 with Completed.
+   - No 218/286 with How was the session = Not interested.
+   - Disposition is not Applied or Applied from different number.
+5. **Overdue task all time:** an open task past its due time.
+6. **Hot Lead - Outreach + Organic:**
+   - Source is one of the 44 in `HOT_SOURCES`.
+   - Created after 17 Aug 2026.
+   - Disposition (open) and Total Calls ≤ 20.
+   - No outbound call today.
+   - No 218/286 with Student Grade = Hostelier.
+7. **Leads without Task:** Disposition (open), with no task at all, open or completed.
+8. **Open lead to be called:**
+   - Disposition (open) and Total Calls ≤ 20.
+   - No outbound call today.
+   - No 218/286 with Hindi Medium or with Demo Conducted.
+   - No 266 Completed.
 
-### 2. Pending follow up for today
-- Has a task of any type, status **pending**, due **today**.
+Every tab sorts by Modified On, newest first. The dialer also drops leads it dialed today and leads without a phone number.
 
-### 3. Lead with zero connect
-- Disposition (open).
-- Total Connects = 0.
-- Total Calls ≤ 25.
-- Not called today.
+## When a tab changes in LSQ
+Change the matching rule in `views.js` (and its test in `tests/views.test.js`) the same way. The tab's settings are in the LSQ web app's IndexedDB `keyval-store` under `smartview-meta-data`, at `Tabs[].TabContentConfiguration.FetchCriteria.AdvancedSearchText`.
 
-### 4. Demo conducted not registered
-- Has a BDA Activity (218 **or 286**) with Activity Type = Demo Conducted.
-- Has no Application Status (266) activity with Application Payment Status = Completed.
-- Has no BDA Activity (218 **or 286**) with How was the session = Not interested.
-- Lead Disposition is not Applied or Applied from different number.
-
-### 5. Overdue task all time
-- Has a task of any type with status **overdue**.
-
-### 6. Hot Lead - Outreach + Organic
-Described as school outreach leads and organic enquiries.
-- Lead Source is one of the 47 sources in the LSQ tab: Social Media, Inbound Phone call, WA Lead, Influencer, Unknown, YouTube…, Instagram…, websiteform, School, School_Outreach, blogs, YT_…, and the rest. Copy the list exactly from the tab.
-- Created On after 17 Aug 2026.
-- Not called today.
-- Disposition (open).
-- Has no BDA Activity (218 **or 286**) with Student Grade = Hostelier.
-- Total Calls ≤ 20.
-
-### 7. Leads without Task
-- Has no task of any type.
-- Disposition (open).
-
-### 8. Open lead to be called
-- Disposition (open).
-- Total Calls ≤ 20.
-- Not called today.
-- Has no BDA Activity (218 **or 286**) with Student Grade = Hindi Medium.
-- Has no BDA Activity (218 **or 286**) with Activity Type = Demo Conducted.
-- Has no Application Status (266) activity with Application Payment Status = Completed.
-
-## Notes
-- **Same tabs for the whole team:** all 8 are shared admin tabs (shared by the same admin), so every sales user sees the same set.
-- **The "Not called today" rule relies on Callyzer** logging the call as activity 22. Calls made through the dialer are also kept out of every dialer tab for the rest of the day by the dialer itself.
-- **When a tab changes in LSQ,** change its List the same way. The dialer has no copy of the rules.
+## Limits
+- **Leads:** a counsellor owning over 4,000 leads misses their oldest in views.
+- **Completed tasks:** at most 20,000 are read per person.
+- **Tasks are read by their owner.** For "Leads without Task", the few leads left after that are checked one by one with `RetrieveTaskByLeadId`, because a previous owner's task also counts in LSQ (Hemanth and dollyy had a completed one owned by Aparna).
+- **Checked against LSQ for one sales user** (Vinay, 2026-11-14): all 8 tabs match.

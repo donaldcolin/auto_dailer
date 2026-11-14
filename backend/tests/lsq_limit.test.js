@@ -1,7 +1,7 @@
 const { isLeadRead, lsqClient } = require('../config/lsq');
 
 test('lead reads are told apart from other LSQ calls', () => {
-  for (const u of ['h/LeadManagement.svc/Leads.Get?a', 'h/LeadManagement.svc/Leads.GetById?id=1', 'h/LeadManagement.svc/Leads/Retrieve/BySearchParameter']) expect(isLeadRead(u)).toBe(true);
+  for (const u of ['h/LeadManagement.svc/Leads.Get?a', 'h/LeadManagement.svc/Leads.GetById?id=1', 'h/LeadManagement.svc/Leads/Retrieve/BySearchParameter', 'h/ProspectActivity.svc/Activity/Retrieve/BySearchParameter']) expect(isLeadRead(u)).toBe(true);
   for (const u of ['h/LeadManagement.svc/LeadsMetaData.Get', 'h/LeadManagement.svc/Lists.Get', 'h/ProspectActivity.svc/Create']) expect(isLeadRead(u)).toBe(false);
 });
 
