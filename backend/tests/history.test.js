@@ -54,3 +54,39 @@ test('talk time comes from the dialer\'s own record first, and a save posted twi
   expect(h.map(x => x.detail)).toEqual(['Spoke 11s · Screening Round']);
   mockDials.data = [];
 });
+
+test("Notes-tab notes join the history in time order, with who wrote them", async () => {
+  mockPost.mockImplementation(async (url, body) => (url.includes('RetrieveNote')
+    ? { data: { RecordCount: 1, List: [{ Note: 'Test note By donald colin', CreatedByName: 'Donald Colin', CreatedOn: '2026-11-15 07:55:21' }] } }
+    : { data: { ProspectActivities: [
+      { EventCode: 21, EventName: 'Inbound Phone Call Activity', CreatedOn: '2026-11-15 07:57:20', Data: [{ Key: 'Duration', Value: '40' }] },
+      { EventCode: 21, EventName: 'Inbound Phone Call Activity', CreatedOn: '2026-11-15 07:55:00', Data: [{ Key: 'Duration', Value: '10' }] },
+    ] } }));
+  const h = await leadHistory('lead9', 6, Date.parse('2026-11-15T10:00:00Z'));
+  const call = mockPost.mock.calls.filter(c => c[0].includes('RetrieveNote')).at(-1);
+  expect(call[1].Parameter).toEqual({ RelatedId: 'lead9' });
+  expect(h.map(x => x.kind)).toEqual(['spoke', 'note', 'spoke']);
+  expect(h[1]).toMatchObject({ kind: 'note', what: 'Note', detail: 'by Donald Colin', note: 'Test note By donald colin', at: 'Today, 1:25 pm' });
+});
+
+test('if LSQ refuses the notes, the activities still come back', async () => {
+  mockPost.mockImplementation(async (url) => {
+    if (url.includes('RetrieveNote')) throw new Error('429');
+    return { data: { ProspectActivities: [{ EventCode: 21, EventName: 'Inbound', CreatedOn: '2026-11-15 07:57:20', Data: [{ Key: 'Duration', Value: '40' }] }] } };
+  });
+  const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    expect((await leadHistory('lead10', 6, Date.parse('2026-11-15T10:00:00Z'))).map(x => x.kind)).toEqual(['spoke']);
+  } finally { spy.mockRestore(); }
+});
+
+test('only the newest note is shown: older Notes-tab notes go, older activity notes lose their text', async () => {
+  mockPost.mockImplementation(async (url) => (url.includes('RetrieveNote')
+    ? { data: { List: [{ Note: 'older tab note', CreatedByName: 'Donald Colin', CreatedOn: '2026-11-15 07:55:21' }] } }
+    : { data: { ProspectActivities: [
+      { EventCode: 263, EventName: 'HR Activity', CreatedOn: '2026-11-15 07:57:20', Data: [], ActivityFields: { mx_Custom_1: 'Yes', ActivityEvent_Note: 'newest' } },
+      { EventCode: 263, EventName: 'HR Activity', CreatedOn: '2026-11-15 07:55:00', Data: [], ActivityFields: { mx_Custom_1: 'Yes', ActivityEvent_Note: 'older activity note' } },
+    ] } }));
+  const h = await leadHistory('lead11', 6, Date.parse('2026-11-15T10:00:00Z'));
+  expect(h.map(x => [x.kind, x.note])).toEqual([['spoke', 'newest'], ['spoke', '']]);
+});

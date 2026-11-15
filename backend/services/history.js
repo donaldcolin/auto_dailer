@@ -38,16 +38,25 @@ function formSummary(fields, form) {
 
 /**
  * A lead's latest LSQ activities, newest first, for the call screen: { at, kind, what, detail, note }.
- * what: the activity's name (the heading); detail: the outcome. kind: 'spoke' | 'missed' | 'other'. A marked HR/BDA activity and Callyzer's log of the same call become one line:
+ * what: the activity's name (the heading); detail: the outcome. kind: 'spoke' | 'missed' | 'other' | 'note' (a Notes-tab note). A marked HR/BDA activity and Callyzer's log of the same call become one line:
  * "Spoke 2m 4s" with the form's outcome, or just the reason it didn't connect ("Did not pick").
  */
 async function leadHistory(leadId, limit = 6, now = Date.now()) {
   // Read extra rows: hidden kinds and calls merged into their marked activity don't count.
-  const { data } = await lsqClient.post(`${lsqUrl('ProspectActivity.svc/Retrieve')}&leadId=${encodeURIComponent(leadId)}`, {
-    Parameter: { FromDate: '', ToDate: '', IncludeCustomActivity: 1 },
-    Paging: { Offset: '0', RowCount: String(limit * 4) },
-    Sorting: { ColumnName: 'CreatedOn', Direction: '1' },
-  });
+  const [{ data }, notes] = await Promise.all([
+    lsqClient.post(`${lsqUrl('ProspectActivity.svc/Retrieve')}&leadId=${encodeURIComponent(leadId)}`, {
+      Parameter: { FromDate: '', ToDate: '', IncludeCustomActivity: 1 },
+      Paging: { Offset: '0', RowCount: String(limit * 4) },
+      Sorting: { ColumnName: 'CreatedOn', Direction: '1' },
+    }),
+    // Notes from the lead's Notes tab: a separate list in LSQ. Extra, so a refusal leaves the activities.
+    lsqClient.post(lsqUrl('LeadManagement.svc/RetrieveNote'), {
+      Parameter: { RelatedId: leadId }, Paging: { PageIndex: 1, PageSize: limit }, Sorting: { ColumnName: 'CreatedOn', Direction: '1' },
+    }).then(r => r.data?.List || []).catch(err => {
+      console.error('[history] notes skipped:', err.response?.data?.ExceptionMessage || err.message);
+      return [];
+    }),
+  ]);
   const rows = (data.ProspectActivities || []).filter(a => !HIDDEN.has(a.EventCode));
   const forms = {};
   for (const e of new Set(rows.map(a => a.EventCode))) if (activity.FORMS[e]) forms[e] = await activity.getForm(e);
@@ -77,7 +86,9 @@ async function leadHistory(leadId, limit = 6, now = Date.now()) {
 
   const out = [];
   const seen = new Set();
+  const push = out.push.bind(out);
   for (const a of rows) {
+    out.push = item => push({ ...item, ts: utc(a.CreatedOn) });
     if (claimed.has(a)) continue;
     const key = `${a.EventCode} ${a.CreatedOn}`; // the same save posted twice (a retry after a lost reply) shows once
     if (seen.has(key)) continue;
@@ -106,7 +117,18 @@ async function leadHistory(leadId, limit = 6, now = Date.now()) {
     }
     if (out.length >= limit) break;
   }
-  return out;
+  // Notes-tab notes in time order with the activities, newest first.
+  const noteItems = notes.filter(n => n.Note).map(n => ({
+    at: when(n.CreatedOn, now), kind: 'note', what: 'Note', detail: n.CreatedByName ? `by ${n.CreatedByName.trim()}` : '', note: n.Note, ts: utc(n.CreatedOn),
+  }));
+  // Only the newest note is shown (Donald, 2026-11-15): an older Notes-tab note goes, an older activity keeps its line without its note.
+  let noted = false;
+  const items = [...out, ...noteItems].sort((x, y) => y.ts - x.ts).flatMap(({ ts, ...item }) => {
+    if (!item.note) return [item];
+    if (!noted) { noted = true; return [item]; }
+    return item.kind === 'note' ? [] : [{ ...item, note: '' }];
+  });
+  return items.slice(0, limit);
 }
 
 module.exports = { leadHistory, formSummary, when };

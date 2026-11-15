@@ -59,7 +59,7 @@ function LeadHistory({ history, compact }) {
       {history.items && !history.items.length && <Text style={styles.historySub}>No earlier activity.</Text>}
       {items.map((h, i) => {
         // One line per call: spoke (with how long), didn't connect (why), or something else that happened.
-        const icon = { spoke: 'call', missed: 'call-outline' }[h.kind] || 'ellipse-outline';
+        const icon = { spoke: 'call', missed: 'call-outline', note: 'document-text-outline' }[h.kind] || 'ellipse-outline';
         const tint = h.kind === 'missed' ? colors.muted : colors.text;
         return (
           <View key={i} style={[styles.historyRow, compact && { paddingVertical: 2 }, i === items.length - 1 && { borderBottomWidth: 0 }]}>
@@ -68,7 +68,8 @@ function LeadHistory({ history, compact }) {
               <Text style={[styles.historyWhat, compact && styles.detailSmall]} numberOfLines={1}>{h.what}</Text>
               <Text style={[styles.historyAt, compact && styles.detailSmall]}>{h.at}</Text>
             </View>
-            {!!h.detail && <Text style={[styles.historySub, !compact && styles.historyIndent, compact && styles.detailSmall]} numberOfLines={compact ? 1 : 2}>{h.detail}</Text>}
+            {/* A Notes-tab note: its text is the point, so the compact view shows it instead of who wrote it. */}
+            {!!(compact && h.kind === 'note' ? h.note : h.detail) && <Text style={[styles.historySub, !compact && styles.historyIndent, compact && styles.detailSmall]} numberOfLines={compact ? 1 : 2}>{compact && h.kind === 'note' ? h.note : h.detail}</Text>}
             {!!h.note && !compact && <Text style={[styles.historyNote, styles.historyIndent]} numberOfLines={3}>{h.note}</Text>}
           </View>
         );
