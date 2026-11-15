@@ -391,3 +391,10 @@ describe('coming-up follow-ups (a heads-up, not a jump)', () => {
     expect((await getQueue({ id: 'u81', lsq_user_id: 'L81', groups: [] }, NOW)).upcoming).toEqual([]);
   });
 });
+
+test("details: the 12th school's name, else the 10th's, only when there", () => {
+  const { details } = require('../services/queue');
+  expect(details({ Source: 'Unknown', mx_School_Name: 'DPS Bangalore', mx_Class_10th_School_Name: 'X' })).toContainEqual({ label: 'School', value: 'DPS Bangalore' });
+  expect(details({ mx_Class_10th_School_Name: 'Kendriya Vidyalaya' })).toContainEqual({ label: 'School', value: 'Kendriya Vidyalaya' });
+  expect(details({ Source: 'Unknown' }).map(d => d.label)).not.toContain('School');
+});

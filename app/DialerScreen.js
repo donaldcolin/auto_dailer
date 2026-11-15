@@ -33,11 +33,17 @@ function rememberSticky(form, vals) {
 }
 
 // Source, location, past calls… from LSQ, as label/value rows (only the filled ones arrive).
-function LeadDetails({ details, compact }) {
-  if (!details?.length) return null;
+// The lead's place ("Karnataka", or "Bengaluru, Karnataka"), shown as a tag next to its stage.
+const locationOf = (lead) => lead.details?.find((d) => d.label === 'Location')?.value || '';
+
+// Lead age and last spoke left out (Donald, 2026-11-15): the calls line and Recent activity say what matters.
+const HIDDEN_DETAILS = ['Lead age', 'Last spoke'];
+function LeadDetails({ details, compact, omit = [] }) {
+  const shown = (details || []).filter((d) => !HIDDEN_DETAILS.includes(d.label) && !omit.includes(d.label));
+  if (!shown.length) return null;
   return (
     <View style={compact ? styles.detailsCompact : styles.details}>
-      {details.map((d) => (
+      {shown.map((d) => (
         <View key={d.label} style={styles.detailRow}>
           <Text style={[styles.detailLabel, compact && styles.detailSmall]}>{d.label}</Text>
           <Text style={[styles.detailValue, compact && styles.detailSmall]} numberOfLines={2}>{d.value}</Text>
@@ -48,9 +54,25 @@ function LeadDetails({ details, compact }) {
 }
 
 // The lead's latest LSQ activities: earlier HR Activities with what was marked, calls, pushes…
-function LeadHistory({ history, compact }) {
+// The lead's newest note (from an activity or the Notes tab), on its own before Recent activity: read before you talk.
+function LatestNote({ history }) {
+  const h = history?.items?.find((i) => i.note);
+  if (!h) return null;
+  const who = h.kind === 'note' ? h.detail.replace(/^by /, '') : h.what;
+  return (
+    <View style={styles.latestNote} accessible accessibilityLabel={`Latest note: ${h.note}. ${who}, ${h.at}`}>
+      <Text style={styles.historyTitle}>Latest note</Text>
+      <Text style={styles.latestNoteText}>{h.note}</Text>
+      <Text style={styles.historySub}>{who}, {h.at}</Text>
+    </View>
+  );
+}
+
+function LeadHistory({ history, compact, hideNotes }) {
   if (!history) return null;
-  const items = compact ? (history.items || []).slice(0, 2) : history.items || [];
+  // With the note shown above, the history keeps to what happened: the Notes-tab line itself goes too.
+  const all = (history.items || []).filter((i) => !(hideNotes && i.kind === 'note'));
+  const items = compact ? all.slice(0, 2) : all;
   return (
     <View style={compact ? styles.detailsCompact : styles.history}>
       {!compact && <Text style={styles.historyTitle}>Recent activity</Text>}
@@ -59,7 +81,12 @@ function LeadHistory({ history, compact }) {
       {history.items && !history.items.length && <Text style={styles.historySub}>No earlier activity.</Text>}
       {items.map((h, i) => {
         // One line per call: spoke (with how long), didn't connect (why), or something else that happened.
-        const icon = { spoke: 'call', missed: 'call-outline', note: 'document-text-outline' }[h.kind] || 'ellipse-outline';
+        // A call has a phone (filled if it connected), a marked activity a pen, a note a page, a stage change arrows.
+        const isCall = h.what === 'Outgoing call' || h.what === 'Incoming call';
+        const icon = h.kind === 'note' ? 'document-text-outline'
+          : h.what === 'Stage changed' ? 'swap-horizontal-outline'
+            : isCall ? (h.kind === 'spoke' ? 'call' : 'call-outline')
+              : 'create-outline';
         const tint = h.kind === 'missed' ? colors.muted : colors.text;
         return (
           <View key={i} style={[styles.historyRow, compact && { paddingVertical: 2 }, i === items.length - 1 && { borderBottomWidth: 0 }]}>
@@ -70,7 +97,7 @@ function LeadHistory({ history, compact }) {
             </View>
             {/* A Notes-tab note: its text is the point, so the compact view shows it instead of who wrote it. */}
             {!!(compact && h.kind === 'note' ? h.note : h.detail) && <Text style={[styles.historySub, !compact && styles.historyIndent, compact && styles.detailSmall]} numberOfLines={compact ? 1 : 2}>{compact && h.kind === 'note' ? h.note : h.detail}</Text>}
-            {!!h.note && !compact && <Text style={[styles.historyNote, styles.historyIndent]} numberOfLines={3}>{h.note}</Text>}
+            {!!h.note && !compact && !hideNotes && <Text style={[styles.historyNote, styles.historyIndent]} numberOfLines={3}>{h.note}</Text>}
           </View>
         );
       })}
@@ -812,19 +839,24 @@ export default function DialerScreen({ me }) {
             onScrollEndDrag={dragEnd}
           >
             {!!lead.followUp && (
+              // Same grey as follow-up rows in the list, so it reads as the same thing.
               <View style={styles.followUp} accessibilityRole="alert">
-                <Ionicons name="alarm-outline" size={18} color={colors.bg} />
-                <Text style={styles.followUpText}>Follow-up · {dueText(lead.followUp.dueAt)}</Text>
+                <View style={styles.fuDot} />
+                <Text style={styles.followUpText}>
+                  {dueText(lead.followUp.dueAt) === 'due today' ? 'Follow-up due today' : `Follow-up due at ${dueText(lead.followUp.dueAt).replace(/^was due /, '')}`}
+                </Text>
               </View>
             )}
             <Text style={styles.callName}>{lead.name || 'No name'}</Text>
             <Text style={styles.callPhone}>{pretty(lead.phone)}</Text>
             <View style={styles.tags}>
               {!!lead.stage && <Text style={styles.tag}>{lead.stage}</Text>}
+              {!!locationOf(lead) && <Text style={styles.tag}>{locationOf(lead)}</Text>}
               {lead.pushed && <Text style={[styles.tag, styles.tagOn]}>Pushed by your TL</Text>}
             </View>
-            <LeadDetails details={lead.details} />
-            <LeadHistory history={histories[lead.prospectId] || {}} />
+            <LeadDetails details={lead.details} omit={['Location']} />
+            <LatestNote history={histories[lead.prospectId]} />
+            <LeadHistory history={histories[lead.prospectId] || {}} hideNotes />
           </ScrollView>
         </View>
       ) : (
@@ -932,16 +964,13 @@ export default function DialerScreen({ me }) {
                       <Text style={styles.rowAbout} numberOfLines={1}>{about}</Text>
                     </View>
                     {!!right && (dueAt ? (
-                      // A follow-up: same layout as "Last call", with an alarm; overdue adds only a small red dot.
+                      // A follow-up: same layout as "Last call", marked by a small red dot.
                       <View style={styles.rowRight}>
                         <View style={styles.fuLabelRow}>
-                          {right.late && <View style={styles.fuDot} />}
+                          <View style={styles.fuDot} />
                           <Text style={styles.rowLabel}>{right.label}</Text>
                         </View>
-                        <View style={styles.fuTime}>
-                          <Ionicons name="alarm-outline" size={14} color={colors.text} />
-                          <Text style={styles.rowAge}>{right.value}</Text>
-                        </View>
+                        <Text style={styles.rowAge}>{right.value}</Text>
                       </View>
                     ) : (
                       <View style={styles.rowRight}>
@@ -1035,8 +1064,10 @@ const styles = StyleSheet.create({
   count: { fontSize: 72, fontWeight: '300', color: colors.text, lineHeight: 80 },
   countLabel: { fontSize: 17, color: colors.text, marginBottom: 20 },
   notice: { fontSize: 15, lineHeight: 22, color: colors.text, marginBottom: 20 },
-  followUp: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 8, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12, backgroundColor: colors.text, marginBottom: 16 },
-  followUpText: { fontSize: 14, fontWeight: '600', color: colors.bg },
+  followUp: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, backgroundColor: '#F5F5F5', marginBottom: 20 },
+  followUpText: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text },
+  latestNote: { marginTop: 24, paddingLeft: 14, borderLeftWidth: 3, borderLeftColor: colors.text, gap: 4 },
+  latestNoteText: { fontSize: 16, lineHeight: 23, color: colors.text },
   noticeLink: { textDecorationLine: 'underline' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   rowBody: { flex: 1, minWidth: 0, gap: 2 },
@@ -1048,7 +1079,6 @@ const styles = StyleSheet.create({
   rowFollow: { backgroundColor: '#F5F5F5', borderRadius: 14, marginHorizontal: -12, paddingHorizontal: 12, marginVertical: 4, borderBottomWidth: 0 },
   fuLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   fuDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.red },
-  fuTime: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   rowAge: { fontSize: 13, color: colors.text, fontVariant: ['tabular-nums'] },
   caughtUp: { gap: 8, marginBottom: 24 },
   caughtUpTitle: { fontSize: 34, fontWeight: '300', color: colors.text },
