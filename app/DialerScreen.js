@@ -173,6 +173,10 @@ export default function DialerScreen({ me }) {
         const ring = { since: Date.now() - 2000 };
         ring.lookup = flush().then(() => identify(number)).then((found) => {
           if (incomingRef.current === ring && found) setIncomingLead(found.lead);
+          // "Open leads on my laptop": a lead calling in opens while it still rings, like an outgoing call does.
+          if (found && loadPrefs().autoLaptop) {
+            api(`/api/lead/${encodeURIComponent(found.lead.prospectId)}/open-on-laptop`, { method: 'POST' }).catch(() => {});
+          }
           return found;
         });
         incomingRef.current = ring;

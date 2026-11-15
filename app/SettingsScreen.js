@@ -51,7 +51,7 @@ export default function SettingsScreen({ onClose, chooseSim, onRecordings, onKey
         <View style={styles.row}>
           <View style={{ flex: 1 }}>
             <Text style={styles.rowText}>Open leads on my laptop</Text>
-            <Text style={styles.meta}>Each lead opens in LeadSquared on your laptop when its call starts. Needs the Dialer extension in Chrome.</Text>
+            <Text style={styles.meta}>Each lead opens in LeadSquared on your laptop when you call it, or as soon as it calls you. Needs the Dialer extension in Chrome.</Text>
           </View>
           <Switch
             value={!!prefs.autoLaptop}
