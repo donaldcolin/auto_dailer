@@ -125,12 +125,12 @@ test('details: filled fields only, in plain words, LSQ UTC shown as IST', () => 
   const { details } = require('../services/queue');
   expect(details({
     Source: 'Naukri', SourceMedium: 'ARMT Hindi Kalvium Job Posting', SourceCampaign: 'Exp 0-1 year',
-    mx_District: 'Delhi', mx_State: '', mx_Total_Calls: '3', mx_Total_Connects: '1',
+    mx_District: 'Delhi', mx_State: '', mx_Total_Calls: '3', mx_Total_Connects: '1', mx_Lead_Disposition: 'Call Later',
     mx_Last_Spoken_On: '2026-10-31 10:52:56.000', LeadAge: '5',
   })).toEqual([
     { label: 'Source', value: 'Naukri, ARMT Hindi Kalvium Job Posting' },
+    { label: 'Disposition', value: 'Call Later' },
     { label: 'Location', value: 'Delhi' },
-    { label: 'Calls', value: '3 made, 1 connected' },
     { label: 'Last spoke', value: expect.stringMatching(/31 Oct.*4:22/i) },
     { label: 'Lead age', value: '5 days' },
   ]);

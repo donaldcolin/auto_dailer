@@ -9,7 +9,7 @@ const LIST_CACHE_MS = 5 * 60 * 1000;
 const PUSH_CACHE_MS = 60 * 1000; // a TL's push reaches the queue within a minute
 const PAGE_SIZE = 200;
 // Shown on the call screen when filled (picked from HR leads, 2026-11-04; LSQ lead fields are org-wide).
-const DETAIL_COLUMNS = 'Source,SourceMedium,mx_School_Name,mx_Class_10th_School_Name,mx_District,mx_State,mx_Total_Calls,mx_Total_Connects,mx_Last_Spoken_On,LeadAge';
+const DETAIL_COLUMNS = 'Source,SourceMedium,mx_Lead_Disposition,mx_School_Name,mx_Class_10th_School_Name,mx_District,mx_State,mx_Total_Calls,mx_Total_Connects,mx_Last_Spoken_On,LeadAge';
 const COLUMNS = `ProspectID,FirstName,LastName,Phone,Mobile,ProspectStage,OwnerId,mx_Last_Attempted_On,${DETAIL_COLUMNS}`;
 // Converted or ruled-out leads: never in the default queue. A TL rule can still target them on purpose.
 const SKIP_BY_DEFAULT = new Set(['Signup Done', 'Payment Done', 'Customer', 'Disqualified']);
@@ -42,8 +42,8 @@ function details(p) {
   };
   add('Source', p.Source, p.SourceMedium);
   add('School', p.mx_School_Name || p.mx_Class_10th_School_Name); // the 12th school, else the 10th
+  add('Disposition', p.mx_Lead_Disposition);
   add('Location', p.mx_District, p.mx_State);
-  if (Number(p.mx_Total_Calls)) add('Calls', `${p.mx_Total_Calls} made, ${p.mx_Total_Connects || 0} connected`);
   if (p.mx_Last_Spoken_On) add('Last spoke', istTime(p.mx_Last_Spoken_On));
   if (Number(p.LeadAge)) add('Lead age', `${p.LeadAge} ${p.LeadAge === '1' || p.LeadAge === 1 ? 'day' : 'days'}`);
   return out;
