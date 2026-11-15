@@ -86,8 +86,14 @@ const pretty = (phone) => dialable(phone).replace(/^(\+91)?(\d{5})(\d{5})$/, (_,
  * Progressive dialer: one lead at a time from /api/queue.
  * idle → countdown → calling → (0 s: reason | >0 s: outcome) → next lead.
  * The caller always marks their team's LSQ activity: one tap on a reason, or the form after a connected call.
- * Every lead dialed or skipped is saved, so the next /api/queue no longer returns it.
+ * Every lead dialed or skipped is saved: the next /api/queue leaves called ones out and puts skipped ones at the back.
  */
+// A due follow-up's time: "was due 4:30 pm", or "due today" for a date-only follow-up (LSQ stores those at midnight).
+function dueText(iso) {
+  const t = new Date(iso);
+  return t.getHours() === 0 && t.getMinutes() === 0 ? 'due today' : `was due ${t.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}`;
+}
+
 // When a lead was last dialed, short: "Just now", "25 min ago", "Today, 7:12 pm", "Yesterday", "3 days ago", "4 Nov".
 function ago(iso, now = Date.now()) {
   const t = new Date(iso);
@@ -148,7 +154,8 @@ export default function DialerScreen({ me }) {
   const setPhase = (p) => { phaseRef.current = p; setPhaseState(p); };
   const formRef = useRef(null);
   const queueRef = useRef({ leads: [], rule: null, source: null });
-  const handledRef = useRef(new Set()); // prospect ids saved or skipped since the last Start
+  const skippedRef = useRef(new Map()); // prospect id -> when it was skipped on this phone today
+  const handledRef = useRef(new Set()); // prospect ids saved since the last Start
   const incomingRef = useRef(null); // { since, lookup }: a call ringing in on the business SIM
   const pendingIncomingRef = useRef(null); // a lead's answered call that waits for the counsellor to finish marking
   formRef.current = form;
@@ -284,10 +291,14 @@ export default function DialerScreen({ me }) {
   // The queue as last loaded, minus the leads handled since. Moving to the next lead uses this list
   // straight away; the server reload runs in the background (it only adds a TL's new pushes).
   function pending() {
-    const { leads, rule, source } = queueRef.current;
+    const { leads, rule, source, upcoming = [] } = queueRef.current;
     const waiting = waitingLeads(); // saved on the phone, not yet on the server
-    const left = leads.filter((l) => !handledRef.current.has(l.prospectId) && !waiting.has(l.prospectId));
-    setQueueInfo({ count: left.length, source, rule, leads: left });
+    const open = leads.filter((l) => !handledRef.current.has(l.prospectId) && !waiting.has(l.prospectId));
+    // Skipped here: at the back, the earliest skip first, whatever order a reload brought (the server may not have the skip yet).
+    const skipped = skippedRef.current;
+    const left = [...open.filter((l) => !skipped.has(l.prospectId)),
+      ...open.filter((l) => skipped.has(l.prospectId)).sort((a, b) => skipped.get(a.prospectId) - skipped.get(b.prospectId))];
+    setQueueInfo({ count: left.length, source, rule, leads: left, upcoming });
     return left;
   }
 
@@ -298,7 +309,7 @@ export default function DialerScreen({ me }) {
     if (v !== viewRef.current) return pending(); // the person switched tabs while this loaded
     // The tab's List was renamed or deleted: back to My leads.
     if (v !== 'own' && q.source === 'own') { pickView('own', false); showToast('That view is gone; showing My leads'); }
-    queueRef.current = { leads: q.leads, rule: q.rule, source: q.source };
+    queueRef.current = { leads: q.leads, rule: q.rule, source: q.source, upcoming: q.upcoming || [] };
     remember(`queue-${me.email}-${viewRef.current}`, queueRef.current);
     return pending();
   }
@@ -543,8 +554,8 @@ export default function DialerScreen({ me }) {
     const call = callRef.current;
     const { lead: l, startedAt } = call;
     if (callRef.current === call) callRef.current = null;
-    markHandled(l.prospectId);
     enqueue({ prospectId: l.prospectId, phone: l.phone, outcome, talkSeconds: seconds, startedAt, ruleId: l.ruleId, activity });
+    if (outcome === 'skipped') pending(); else markHandled(l.prospectId); // a skipped lead stays in the queue, at the back
     return true;
   }
 
@@ -569,8 +580,17 @@ export default function DialerScreen({ me }) {
   function skip() {
     if (phaseRef.current !== 'countdown') return;
     callRef.current = { lead, startedAt: new Date().toISOString() };
-    markHandled(lead.prospectId);
+    skippedRef.current.set(lead.prospectId, Date.now()); // back of the queue, not gone
     save('skipped', null);
+    // Only skipped leads left: stop here rather than dial the one just skipped. Resume calls them, earliest skip first.
+    const left = pending();
+    if (!left.length || skippedRef.current.has(left[0].prospectId)) {
+      pausedRef.current = true;
+      setLead(null);
+      setPhase('paused');
+      showToast('Only skipped leads left. Resume to call them.');
+      return;
+    }
     showToast(`Skipped ${lead.name || 'lead'}`);
     next();
   }
@@ -596,6 +616,14 @@ export default function DialerScreen({ me }) {
   const inView = !!view && view !== 'own' && !!queueInfo && !queueInfo.rule;
   const shownTab = inView ? 'mine' : tab || (pushedLeads.length ? 'pushed' : 'mine');
   const tabLeads = shownTab === 'pushed' ? pushedLeads : myLeads;
+  // Today's follow-ups still to come: their time shows on their row. One not in the list (called earlier today) is shown
+  // under the overdue ones anyway, so it's never a surprise; it's dialed only once its time comes.
+  const upcoming = (queueInfo?.upcoming || []).filter((u) => new Date(u.dueAt) > Date.now());
+  const soon = new Map(upcoming.map((u) => [u.prospectId, u.dueAt]));
+  const shownLeads = shownTab === 'mine'
+    ? [...tabLeads.filter((l) => l.followUp), ...upcoming.filter((u) => !tabLeads.some((l) => l.prospectId === u.prospectId)),
+      ...tabLeads.filter((l) => !l.followUp)]
+    : tabLeads;
   const showViews = views?.length > 1 && !!queueInfo && !queueInfo.rule && (shownTab === 'mine' || !left || phase === 'done');
   const status = {
     countdown: held ? 'Paused' : `Calling in ${countdown}`,
@@ -782,6 +810,12 @@ export default function DialerScreen({ me }) {
             onScrollBeginDrag={dragStart}
             onScrollEndDrag={dragEnd}
           >
+            {!!lead.followUp && (
+              <View style={styles.followUp} accessibilityRole="alert">
+                <Ionicons name="alarm-outline" size={18} color={colors.bg} />
+                <Text style={styles.followUpText}>Follow-up · {dueText(lead.followUp.dueAt)}</Text>
+              </View>
+            )}
             <Text style={styles.callName}>{lead.name || 'No name'}</Text>
             <Text style={styles.callPhone}>{pretty(lead.phone)}</Text>
             <View style={styles.tags}>
@@ -882,26 +916,41 @@ export default function DialerScreen({ me }) {
             ) : (
               <>
                 
-              {tabLeads.slice(0, 50).map((l) => {
+              {shownLeads.slice(0, 50).map((l) => {
                 const calls = l.calls || 0;
                 const about = calls ? `${calls} ${calls === 1 ? 'call' : 'calls'} · ${l.picked || 0} picked` : 'No calls yet';
-                const last = l.lastCall && ago(l.lastCall);
+                // A follow-up today takes the place of "Last call": overdue ones are already at the top of the list.
+                const dueAt = l.followUp?.dueAt || soon.get(l.prospectId);
+                const right = dueAt
+                  ? { label: l.followUp ? 'Overdue' : 'Follow-up', value: dueText(dueAt).replace(/^was due /, ''), late: !!l.followUp }
+                  : l.lastCall && { label: 'Last call', value: ago(l.lastCall) };
                 return (
-                  <View key={l.prospectId} style={styles.row} accessible accessibilityLabel={`${l.name || 'No name'}, ${about}${last ? `, last call ${last}` : ''}`}>
+                  <View key={l.prospectId} style={[styles.row, dueAt && styles.rowFollow]} accessible accessibilityLabel={`${l.name || 'No name'}, ${about}${right ? `, ${right.label} ${right.value}` : ''}`}>
                     <View style={styles.rowBody}>
                       <Text style={styles.rowName} numberOfLines={1}>{l.name || 'No name'}</Text>
                       <Text style={styles.rowAbout} numberOfLines={1}>{about}</Text>
                     </View>
-                    {!!last && (
+                    {!!right && (dueAt ? (
+                      // A follow-up: same layout as "Last call", with an alarm; overdue adds only a small red dot.
                       <View style={styles.rowRight}>
-                        <Text style={styles.rowLabel}>Last call</Text>
-                        <Text style={styles.rowAge}>{last}</Text>
+                        <View style={styles.fuLabelRow}>
+                          {right.late && <View style={styles.fuDot} />}
+                          <Text style={styles.rowLabel}>{right.label}</Text>
+                        </View>
+                        <View style={styles.fuTime}>
+                          <Ionicons name="alarm-outline" size={14} color={colors.text} />
+                          <Text style={styles.rowAge}>{right.value}</Text>
+                        </View>
                       </View>
-                    )}
+                    ) : (
+                      <View style={styles.rowRight}>
+                        <Text style={styles.rowLabel}>{right.label}</Text>
+                        <Text style={styles.rowAge}>{right.value}</Text>
+                      </View>
+                    ))}
                   </View>
                 );
               })}
-              {tabLeads.length > 50 && <Text style={styles.more}>and {tabLeads.length - 50} more</Text>}
                 {tabLeads.length > 50 && <Text style={styles.more}>and {tabLeads.length - 50} more</Text>}
                 {!tabLeads.length && <Text style={styles.more}>None right now.</Text>}
               </>
@@ -985,6 +1034,8 @@ const styles = StyleSheet.create({
   count: { fontSize: 72, fontWeight: '300', color: colors.text, lineHeight: 80 },
   countLabel: { fontSize: 17, color: colors.text, marginBottom: 20 },
   notice: { fontSize: 15, lineHeight: 22, color: colors.text, marginBottom: 20 },
+  followUp: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 8, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12, backgroundColor: colors.text, marginBottom: 16 },
+  followUpText: { fontSize: 14, fontWeight: '600', color: colors.bg },
   noticeLink: { textDecorationLine: 'underline' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   rowBody: { flex: 1, minWidth: 0, gap: 2 },
@@ -992,6 +1043,11 @@ const styles = StyleSheet.create({
   rowAbout: { fontSize: 13, color: colors.muted },
   rowRight: { alignItems: 'flex-end', gap: 2, marginLeft: 12 },
   rowLabel: { fontSize: 11, color: colors.muted },
+  // Follow-up rows: tinted and rounded, edge to edge with the other rows' text.
+  rowFollow: { backgroundColor: '#F5F5F5', borderRadius: 14, marginHorizontal: -12, paddingHorizontal: 12, marginVertical: 4, borderBottomWidth: 0 },
+  fuLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  fuDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.red },
+  fuTime: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   rowAge: { fontSize: 13, color: colors.text, fontVariant: ['tabular-nums'] },
   caughtUp: { gap: 8, marginBottom: 24 },
   caughtUpTitle: { fontSize: 34, fontWeight: '300', color: colors.text },

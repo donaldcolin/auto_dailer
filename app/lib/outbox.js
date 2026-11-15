@@ -11,8 +11,8 @@ function store(items) {
   try { localStorage.setItem(KEY, JSON.stringify(items)); } catch {}
 }
 
-// Leads with a save still waiting, so a reload of the queue doesn't offer them again.
-export const waitingLeads = () => new Set(load().map((i) => i.body.prospectId));
+// Leads with a save still waiting, so a reload of the queue doesn't offer them again. A skip isn't one: skipped leads come back.
+export const waitingLeads = () => new Set(load().filter((i) => i.body.outcome !== 'skipped').map((i) => i.body.prospectId));
 export const waitingCount = () => load().length;
 
 let sending = null;

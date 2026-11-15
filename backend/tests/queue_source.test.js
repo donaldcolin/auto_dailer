@@ -381,8 +381,11 @@ describe('coming-up follow-ups (a heads-up, not a jump)', () => {
     activeRuleFor.mockResolvedValue(null);
     owned = [];
     views.openTasks.mockResolvedValue([{ RelatedEntityId: 'a', RelatedEntityIdName: 'Amulya Gowda', DueDate: '2026-11-03 11:30:00.000' }]);
+    owned = [{ ProspectID: 'a', FirstName: 'Amulya', LastName: 'Gowda', OwnerId: 'L80', Mobile: '9', ProspectStage: 'New Lead', mx_Total_Calls: '3', mx_Total_Connects: '1' }];
+    mockDialRows = [{ prospect_id: 'a', outcome: 'connected', started_at: '2026-11-03T09:00:00Z' }]; // called earlier today
     const q = await getQueue({ id: 'u80', lsq_user_id: 'L80', groups: [] }, NOW);
-    expect(q.upcoming).toEqual([{ prospectId: 'a', name: 'Amulya Gowda', dueAt: '2026-11-03T11:30:00.000Z' }]);
+    expect(q.leads).toEqual([]); // not in today's queue until it's due
+    expect(q.upcoming).toEqual([expect.objectContaining({ prospectId: 'a', name: 'Amulya Gowda', calls: 3, picked: 1, dueAt: '2026-11-03T11:30:00.000Z' })]);
     activeRuleFor.mockResolvedValue({ id: 'r8', list_id: 'list8', list_name: 'Dialer – X', start_time: '16:00:00' });
     listRows = [];
     expect((await getQueue({ id: 'u81', lsq_user_id: 'L81', groups: [] }, NOW)).upcoming).toEqual([]);

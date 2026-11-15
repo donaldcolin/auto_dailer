@@ -251,8 +251,9 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
 
   // Due follow-ups, after pushes: from the loaded leads when there, else read by id. Only the person's own, with a phone.
   const due = dueFollowUps(tasks, dialed, now).filter(f => !pushedIds.has(f.prospectId));
+  const soon = upcomingFollowUps(tasks, now);
   const byId = new Map(leads.map(l => [l.prospectId, l]));
-  const missing = due.map(f => f.prospectId).filter(id => !byId.has(id));
+  const missing = [...new Set([...due, ...soon].map(f => f.prospectId))].filter(id => !byId.has(id));
   // Each read by id is kept 2 minutes: queue loads come every lead and every 30 s, and lead reads are LSQ's scarcest.
   const read = await Promise.all(missing.map(id => cached(`lead:${id}`, () => readLeadsByIds([id]), PUSH_CACHE_MS).catch(() => [])));
   read.flat().forEach(l => byId.set(l.prospectId, l));
@@ -260,6 +261,9 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
   const followUps = due.map(f => byId.get(f.prospectId) && { ...byId.get(f.prospectId), followUp: { dueAt: f.dueAt } })
     .filter(l => l && l.ownerId === profile.lsq_user_id && l.phone && !SKIP_BY_DEFAULT.has(l.stage));
   const followIds = new Set(followUps.map(l => l.prospectId));
+  // Today's follow-ups still to come, as leads, for the list (a lead called earlier today isn't in the queue until then).
+  const upcoming = soon.map(f => byId.get(f.prospectId) && { ...byId.get(f.prospectId), dueAt: f.dueAt })
+    .filter(l => l && l.ownerId === profile.lsq_user_id && l.phone && !SKIP_BY_DEFAULT.has(l.stage));
 
   const mine = ownQueue(leads, profile.lsq_user_id, done).filter(l => !pushedIds.has(l.prospectId) && !followIds.has(l.prospectId));
   // Skipped today: after everything else, the earliest skip first.
@@ -271,7 +275,7 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
     view: viewInfo,
     rule: rule && { id: rule.id, listName: rule.list_name, startTime: String(rule.start_time).slice(0, 5) },
     pushedCount: pushed.length,
-    upcoming: upcomingFollowUps(tasks, now),
+    upcoming: upcoming.map(({ ownerId, connects, ...lead }) => ({ ...lead, picked: connects })),
     leads: [...pushed, ...followUps, ...rest].map(({ ownerId, connects, ...lead }) => ({ ...lead, picked: connects })),
   };
 }
