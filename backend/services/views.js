@@ -112,8 +112,10 @@ async function readTasks(lsqUserId, status, maxRows) {
   }
   return list.filter(t => t.RelatedEntityId);
 }
-const getTasks = (lsqUserId, now) => cached(`tasks:${lsqUserId}`, 2 * MIN, async () => {
-  const rows = await readTasks(lsqUserId, 0, 5000);
+// A person's open tasks as LSQ returns them ({ RelatedEntityId, DueDate, … }): the tabs and the queue's due follow-ups share this read.
+const openTasks = lsqUserId => cached(`tasks:${lsqUserId}`, 2 * MIN, () => readTasks(lsqUserId, 0, 5000));
+const getTasks = async (lsqUserId, now) => {
+  const rows = await openTasks(lsqUserId);
   const at = t => String(t.DueDate).slice(0, 19); // UTC
   const nowUtc = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
   const { nextMidnight } = dayBounds(now);
@@ -123,7 +125,7 @@ const getTasks = (lsqUserId, now) => cached(`tasks:${lsqUserId}`, 2 * MIN, async
     dueToday: new Set(rows.filter(t => at(t) >= nowUtc && at(t) < nextMidnight).map(t => t.RelatedEntityId)),
     overdue: new Set(rows.filter(t => at(t) < nowUtc).map(t => t.RelatedEntityId)),
   };
-});
+};
 // shortcut: reads at most 20,000 completed tasks; a counsellor with more may see a few leads in "Leads without Task" that have old tasks.
 const getDoneTasks = lsqUserId => cached(`done-tasks:${lsqUserId}`, 30 * MIN, async () =>
   new Set((await readTasks(lsqUserId, 1, 20000)).map(t => t.RelatedEntityId)));
@@ -204,4 +206,4 @@ const listViews = () => VIEWS.map(({ id, name }) => ({ id, name }));
 const warm = () => Promise.all([getBda(), getCalledToday()])
   .catch(err => console.error('[views] warm-up failed:', err.response?.data?.ExceptionMessage || err.message));
 
-module.exports = { VIEWS, listViews, viewRows, asLead, warm, _cache };
+module.exports = { VIEWS, listViews, viewRows, openTasks, asLead, warm, _cache };

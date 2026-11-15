@@ -164,9 +164,41 @@ async function getPushedLeads(profile) {
   return pendingPushes(pushes, leads, attempts);
 }
 
+// Today's attempts, split: `done` = leads called today (left out); `skippedAt` = leads only skipped today, with the
+// time of the latest skip (they come back at the end of the queue).
+function splitAttempts(attempts) {
+  const done = new Set();
+  const skippedAt = new Map();
+  for (const a of attempts) {
+    if (a.outcome !== 'skipped') done.add(a.prospect_id);
+    else if (!(skippedAt.get(a.prospect_id) >= a.started_at)) skippedAt.set(a.prospect_id, a.started_at);
+  }
+  for (const id of done) skippedAt.delete(id);
+  return { done, skippedAt };
+}
+
+// LSQ follow-ups (open tasks) due today whose time has passed and that this person hasn't dialed since: [{ prospectId, dueAt }],
+// the earliest due first, once per lead. Yesterday's are left to the "Overdue task" tab.
+function dueFollowUps(tasks, attempts, now = new Date()) {
+  const midnight = new Date(istNow(now).midnightIso).getTime();
+  const lastDial = new Map();
+  for (const a of attempts) if (!(lastDial.get(a.prospect_id) >= a.started_at)) lastDial.set(a.prospect_id, a.started_at);
+  const due = new Map();
+  for (const t of tasks) {
+    const at = new Date(`${String(t.DueDate).slice(0, 19).replace(' ', 'T')}Z`).getTime();
+    if (!(at >= midnight && at <= now.getTime())) continue;
+    const dialed = lastDial.get(t.RelatedEntityId);
+    if (dialed && new Date(dialed).getTime() >= at) continue;
+    if (!due.has(t.RelatedEntityId) || at < due.get(t.RelatedEntityId)) due.set(t.RelatedEntityId, at);
+  }
+  return [...due].sort((a, b) => a[1] - b[1]).map(([prospectId, at]) => ({ prospectId, dueAt: new Date(at).toISOString() }));
+}
+
 /**
  * Leads a TL pushed come first. Then, by default, the newest leads the caller owns in LSQ (minus closed
  * stages; for HR, minus anyone already spoken to); a TL rule active right now replaces that part with its List.
+ * Due LSQ follow-ups come right after pushes (not during a rule). Leads called today are left out; leads only skipped
+ * today come back at the end.
  * `fresh` skips the LSQ caches for this caller.
  */
 async function getQueue(profile, now = new Date(), { fresh = false, view = null } = {}) {
@@ -178,11 +210,11 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
     ['pushes', 'pushed-leads', `owner:${profile.lsq_user_id}`, rule && `list:${rule.list_id}`].forEach(k => k && _cache.delete(k));
   }
 
-  let dialedToday = supabase.from('dial_attempts').select('prospect_id')
+  let dialedToday = supabase.from('dial_attempts').select('prospect_id, outcome, started_at')
     .eq('user_id', profile.id).gte('started_at', istNow(now).midnightIso);
   dialedToday = rule ? dialedToday.eq('rule_id', rule.id) : dialedToday.is('rule_id', null);
 
-  const [leads, { data: dialed, error }, pushed] = await Promise.all([
+  const [leads, { data: dialed, error }, pushed, tasks] = await Promise.all([
     rule ? getListLeads(rule.list_id)
       : viewInfo ? views.viewRows(profile, viewInfo.id, { columns: COLUMNS, fresh, now }).then(rows => rows.map(toLead))
         : getOwnedLeads(profile),
@@ -192,28 +224,49 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
       console.error('[queue] pushes skipped:', err.response?.data?.ExceptionMessage || err.message);
       return [];
     }),
+    // Due follow-ups are extra too, and never during a TL's rule.
+    rule ? [] : views.openTasks(profile.lsq_user_id).catch(err => {
+      console.error('[queue] follow-ups skipped:', err.response?.data?.ExceptionMessage || err.message);
+      return [];
+    }),
   ]);
   if (error) throw error;
 
   const pushedIds = new Set(pushed.map(l => l.prospectId));
-  const rest = ownQueue(leads, profile.lsq_user_id, new Set(dialed.map(d => d.prospect_id)))
-    .filter(l => !pushedIds.has(l.prospectId));
+  const { done, skippedAt } = splitAttempts(dialed);
+
+  // Due follow-ups, after pushes: from the loaded leads when there, else read by id. Only the person's own, with a phone.
+  const due = dueFollowUps(tasks, dialed, now).filter(f => !pushedIds.has(f.prospectId));
+  const byId = new Map(leads.map(l => [l.prospectId, l]));
+  const missing = due.map(f => f.prospectId).filter(id => !byId.has(id));
+  // Each read by id is kept 2 minutes: queue loads come every lead and every 30 s, and lead reads are LSQ's scarcest.
+  const read = await Promise.all(missing.map(id => cached(`lead:${id}`, () => readLeadsByIds([id]), PUSH_CACHE_MS).catch(() => [])));
+  read.flat().forEach(l => byId.set(l.prospectId, l));
+  // A follow-up still counts on a lead already spoken to (HR's default leaves those out), but never on a closed stage.
+  const followUps = due.map(f => byId.get(f.prospectId) && { ...byId.get(f.prospectId), followUp: { dueAt: f.dueAt } })
+    .filter(l => l && l.ownerId === profile.lsq_user_id && l.phone && !SKIP_BY_DEFAULT.has(l.stage));
+  const followIds = new Set(followUps.map(l => l.prospectId));
+
+  const mine = ownQueue(leads, profile.lsq_user_id, done).filter(l => !pushedIds.has(l.prospectId) && !followIds.has(l.prospectId));
+  // Skipped today: after everything else, the earliest skip first.
+  const rest = [...mine.filter(l => !skippedAt.has(l.prospectId)),
+    ...mine.filter(l => skippedAt.has(l.prospectId)).sort((a, b) => (skippedAt.get(a.prospectId) < skippedAt.get(b.prospectId) ? -1 : 1))];
 
   return {
     source: rule ? 'rule' : viewInfo ? 'view' : 'own',
     view: viewInfo,
     rule: rule && { id: rule.id, listName: rule.list_name, startTime: String(rule.start_time).slice(0, 5) },
     pushedCount: pushed.length,
-    leads: [...pushed, ...rest].map(({ ownerId, connects, ...lead }) => ({ ...lead, picked: connects })),
+    leads: [...pushed, ...followUps, ...rest].map(({ ownerId, connects, ...lead }) => ({ ...lead, picked: connects })),
   };
 }
 
-// How many leads each view would give right now (own leads with a phone, not dialed today): the counts on the app's chips.
+// How many leads each view would give right now (own leads with a phone, not called today; skipped ones count): the counts on the app's chips.
 async function viewCounts(profile, now = new Date()) {
-  const { data: dialed, error } = await supabase.from('dial_attempts').select('prospect_id')
+  const { data: dialed, error } = await supabase.from('dial_attempts').select('prospect_id, outcome, started_at')
     .eq('user_id', profile.id).gte('started_at', istNow(now).midnightIso).is('rule_id', null);
   if (error) throw error;
-  const done = new Set(dialed.map(d => d.prospect_id));
+  const { done } = splitAttempts(dialed);
   const count = leads => ownQueue(leads, profile.lsq_user_id, done).length;
   const counts = await Promise.all([
     getOwnedLeads(profile).then(leads => ['own', count(leads)]),
@@ -222,4 +275,4 @@ async function viewCounts(profile, now = new Date()) {
   return Object.fromEntries(counts);
 }
 
-module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, viewCounts, getListLeads, getOwnedLeads, ownQueue, readList };
+module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, viewCounts, splitAttempts, dueFollowUps, getListLeads, getOwnedLeads, ownQueue, readList };

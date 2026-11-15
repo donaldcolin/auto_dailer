@@ -2,6 +2,7 @@ jest.mock('../config/lsq', () => ({ lsqClient: { post: jest.fn(), get: jest.fn()
 jest.mock('../services/views', () => ({
   listViews: () => [{ id: 'assigned-today', name: 'Leads assigned today' }, { id: 'open-to-call', name: 'Open lead to be called' }],
   viewRows: jest.fn(),
+  openTasks: jest.fn(async () => []),
 }));
 jest.mock('../services/rules', () => ({
   activeRuleFor: jest.fn(),
@@ -23,7 +24,7 @@ jest.mock('../config/supabase', () => {
 });
 const { lsqClient } = require('../config/lsq');
 const { activeRuleFor } = require('../services/rules');
-const { getQueue, viewCounts } = require('../services/queue');
+const { getQueue, viewCounts, dueFollowUps } = require('../services/queue');
 
 // Each test uses its own LSQ user id, so the per-owner cache never leaks between tests.
 // Pushes are cached for a minute across users, so they're set once for the whole file.
@@ -222,5 +223,137 @@ describe("views: a Smart View tab, worked out from the person's own leads (servi
       ? [{ ProspectID: 'o1', OwnerId: 'L40', Mobile: '1' }, { ProspectID: 'o2', OwnerId: 'L40', Mobile: '2' }, { ProspectID: 'x', OwnerId: 'L40' }]
       : []));
     expect(await viewCounts(sales(40))).toEqual({ own: 1, 'assigned-today': 0, 'open-to-call': 1 });
+  });
+});
+
+describe('skipped leads come back at the end', () => {
+  const lead = (id, owner) => ({ ProspectID: id, FirstName: id, OwnerId: owner, Mobile: '9', ProspectStage: 'New Lead' });
+
+  test('a lead skipped today comes back at the end, oldest skip first', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = ['a', 'b', 'c', 'd'].map(id => lead(id, 'L50'));
+    mockDialRows = [
+      { prospect_id: 'b', outcome: 'skipped', started_at: '2026-11-03T05:00:00Z' },
+      { prospect_id: 'a', outcome: 'skipped', started_at: '2026-11-03T04:00:00Z' },
+    ];
+    const q = await getQueue({ id: 'u50', lsq_user_id: 'L50', groups: [] });
+    expect(q.leads.map(l => l.prospectId)).toEqual(['c', 'd', 'a', 'b']);
+  });
+
+  test('a lead skipped then called today stays out', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = ['a', 'b'].map(id => lead(id, 'L51'));
+    mockDialRows = [
+      { prospect_id: 'b', outcome: 'skipped', started_at: '2026-11-03T04:00:00Z' },
+      { prospect_id: 'b', outcome: 'no_answer', started_at: '2026-11-03T05:00:00Z' },
+    ];
+    const q = await getQueue({ id: 'u51', lsq_user_id: 'L51', groups: [] });
+    expect(q.leads.map(l => l.prospectId)).toEqual(['a']);
+  });
+
+  test('chip counts include leads skipped today', async () => {
+    owned = ['a', 'b', 'c'].map(id => lead(id, 'L52'));
+    mockDialRows = [
+      { prospect_id: 'a', outcome: 'skipped', started_at: '2026-11-03T04:00:00Z' },
+      { prospect_id: 'b', outcome: 'no_answer', started_at: '2026-11-03T04:00:00Z' },
+    ];
+    require('../services/views').viewRows.mockResolvedValue([]);
+    const counts = await viewCounts({ id: 'u52', lsq_user_id: 'L52', groups: [], mode: 'sales' });
+    expect(counts.own).toBe(2);
+  });
+});
+
+describe('due follow-ups come first', () => {
+  const views = require('../services/views');
+  const lead = (id, owner) => ({ ProspectID: id, FirstName: id, OwnerId: owner, Mobile: '9', ProspectStage: 'New Lead' });
+  const NOW = new Date('2026-11-03T10:00:00Z'); // the mocked IST midnight is 2026-11-02T18:30Z
+  afterEach(() => views.openTasks.mockResolvedValue([]));
+
+  test('dueFollowUps: due today and past, not dialed since, oldest first, once per lead', () => {
+    const tasks = [
+      { RelatedEntityId: 'late', DueDate: '2026-11-03 09:00:00.000' },
+      { RelatedEntityId: 'early', DueDate: '2026-11-03 04:00:00.000' },
+      { RelatedEntityId: 'early', DueDate: '2026-11-03 06:00:00.000' },
+      { RelatedEntityId: 'later-today', DueDate: '2026-11-03 11:00:00.000' },
+      { RelatedEntityId: 'yesterday', DueDate: '2026-11-02 12:00:00.000' },
+      { RelatedEntityId: 'called', DueDate: '2026-11-03 08:00:00.000' },
+    ];
+    const attempts = [{ prospect_id: 'called', outcome: 'skipped', started_at: '2026-11-03T09:30:00Z' }];
+    expect(dueFollowUps(tasks, attempts, NOW)).toEqual([
+      { prospectId: 'early', dueAt: '2026-11-03T04:00:00.000Z' },
+      { prospectId: 'late', dueAt: '2026-11-03T09:00:00.000Z' },
+    ]);
+  });
+
+  test('due follow-ups come right after pushes, once, with followUp', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = ['a', 'b', 'c'].map(id => lead(id, 'L60'));
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'c', DueDate: '2026-11-03 09:00:00.000' }]);
+    const q = await getQueue({ id: 'u60', lsq_user_id: 'L60', groups: [] }, NOW);
+    expect(q.leads.map(l => l.prospectId)).toEqual(['c', 'a', 'b']);
+    expect(q.leads[0].followUp).toEqual({ dueAt: '2026-11-03T09:00:00.000Z' });
+    expect(q.leads[1].followUp).toBeUndefined();
+  });
+
+  test('a follow-up on a lead someone else owns is left out', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = ['a'].map(id => lead(id, 'L61'));
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'many1', DueDate: '2026-11-03 09:00:00.000' }]); // owned by L8
+    const q = await getQueue({ id: 'u61', lsq_user_id: 'L61', groups: [] }, NOW);
+    expect(q.leads.map(l => l.prospectId)).toEqual(['a']);
+  });
+
+  test('a follow-up lead outside the loaded leads is read by id', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = ['a'].map(id => lead(id, 'L3'));
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'pushed-new', DueDate: '2026-11-03 09:00:00.000' }]);
+    pushes = [];
+    const q = await getQueue({ id: 'u62', lsq_user_id: 'L3', groups: [] }, NOW, { fresh: true });
+    expect(q.leads.map(l => l.prospectId)).toEqual(['pushed-new', 'a']);
+  });
+
+  test('no follow-ups while a TL rule runs', async () => {
+    activeRuleFor.mockResolvedValue({ id: 'r7', list_id: 'list7', list_name: 'Dialer – X', start_time: '16:00:00' });
+    listRows = [];
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'c', DueDate: '2026-11-03 09:00:00.000' }]);
+    const q = await getQueue({ id: 'u63', lsq_user_id: 'L63', groups: [] }, NOW);
+    expect(q.leads).toEqual([]);
+  });
+
+  test('if LSQ refuses the tasks, the queue still loads', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = ['a'].map(id => lead(id, 'L64'));
+    views.openTasks.mockRejectedValue(new Error('429'));
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const q = await getQueue({ id: 'u64', lsq_user_id: 'L64', groups: [] }, NOW);
+      expect(q.leads.map(l => l.prospectId)).toEqual(['a']);
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe('review fixes: follow-ups', () => {
+  const views = require('../services/views');
+  const NOW = new Date('2026-11-03T10:00:00Z');
+  afterEach(() => views.openTasks.mockResolvedValue([]));
+
+  test('a follow-up lead read by id is cached, not read on every queue load', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = [{ ProspectID: 'a', FirstName: 'a', OwnerId: 'L3', Mobile: '9', ProspectStage: 'New Lead' }];
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'pushed-new', DueDate: '2026-11-03 09:00:00.000' }]);
+    pushes = [];
+    await getQueue({ id: 'u70', lsq_user_id: 'L3', groups: [] }, NOW, { fresh: true });
+    const reads = byIdsCalls;
+    await getQueue({ id: 'u70', lsq_user_id: 'L3', groups: [] }, NOW);
+    expect(byIdsCalls).toBe(reads);
+  });
+
+  test('a follow-up on a closed lead (Customer) does not jump the queue', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = [{ ProspectID: 'a', FirstName: 'a', OwnerId: 'L3', Mobile: '9', ProspectStage: 'New Lead' }];
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'pushed-closed', DueDate: '2026-11-03 09:00:00.000' }]);
+    pushes = [];
+    const q = await getQueue({ id: 'u71', lsq_user_id: 'L3', groups: [] }, NOW, { fresh: true });
+    expect(q.leads.map(l => l.prospectId)).toEqual(['a']);
   });
 });
