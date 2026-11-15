@@ -194,6 +194,20 @@ function dueFollowUps(tasks, attempts, now = new Date()) {
   return [...due].sort((a, b) => a[1] - b[1]).map(([prospectId, at]) => ({ prospectId, dueAt: new Date(at).toISOString() }));
 }
 
+// Today's follow-ups still to come: [{ prospectId, name, dueAt }], the earliest first, once per lead. Only a heads-up
+// on the list; each moves to the front when its time comes (dueFollowUps).
+function upcomingFollowUps(tasks, now = new Date()) {
+  const nextMidnight = new Date(istNow(now).midnightIso).getTime() + 24 * 60 * 60 * 1000;
+  const soon = new Map();
+  for (const t of tasks) {
+    const at = new Date(`${String(t.DueDate).slice(0, 19).replace(' ', 'T')}Z`).getTime();
+    if (!(at > now.getTime() && at < nextMidnight)) continue;
+    if (!soon.has(t.RelatedEntityId) || at < soon.get(t.RelatedEntityId).at) soon.set(t.RelatedEntityId, { at, name: t.RelatedEntityIdName || '' });
+  }
+  return [...soon].sort((a, b) => a[1].at - b[1].at)
+    .map(([prospectId, { at, name }]) => ({ prospectId, name, dueAt: new Date(at).toISOString() }));
+}
+
 /**
  * Leads a TL pushed come first. Then, by default, the newest leads the caller owns in LSQ (minus closed
  * stages; for HR, minus anyone already spoken to); a TL rule active right now replaces that part with its List.
@@ -257,6 +271,7 @@ async function getQueue(profile, now = new Date(), { fresh = false, view = null 
     view: viewInfo,
     rule: rule && { id: rule.id, listName: rule.list_name, startTime: String(rule.start_time).slice(0, 5) },
     pushedCount: pushed.length,
+    upcoming: upcomingFollowUps(tasks, now),
     leads: [...pushed, ...followUps, ...rest].map(({ ownerId, connects, ...lead }) => ({ ...lead, picked: connects })),
   };
 }
@@ -275,4 +290,4 @@ async function viewCounts(profile, now = new Date()) {
   return Object.fromEntries(counts);
 }
 
-module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, viewCounts, splitAttempts, dueFollowUps, getListLeads, getOwnedLeads, ownQueue, readList };
+module.exports = { details, istTime, readLeadsByIds, leadsByPhone, getQueue, viewCounts, splitAttempts, dueFollowUps, upcomingFollowUps, getListLeads, getOwnedLeads, ownQueue, readList };

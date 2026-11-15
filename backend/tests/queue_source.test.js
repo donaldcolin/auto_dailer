@@ -24,7 +24,7 @@ jest.mock('../config/supabase', () => {
 });
 const { lsqClient } = require('../config/lsq');
 const { activeRuleFor } = require('../services/rules');
-const { getQueue, viewCounts, dueFollowUps } = require('../services/queue');
+const { getQueue, viewCounts, dueFollowUps, upcomingFollowUps } = require('../services/queue');
 
 // Each test uses its own LSQ user id, so the per-owner cache never leaks between tests.
 // Pushes are cached for a minute across users, so they're set once for the whole file.
@@ -355,5 +355,36 @@ describe('review fixes: follow-ups', () => {
     pushes = [];
     const q = await getQueue({ id: 'u71', lsq_user_id: 'L3', groups: [] }, NOW, { fresh: true });
     expect(q.leads.map(l => l.prospectId)).toEqual(['a']);
+  });
+});
+
+describe('coming-up follow-ups (a heads-up, not a jump)', () => {
+  const views = require('../services/views');
+  const NOW = new Date('2026-11-03T10:00:00Z'); // 3:30 pm IST; IST midnight ends at 2026-11-03T18:30Z
+  afterEach(() => views.openTasks.mockResolvedValue([]));
+
+  test('upcomingFollowUps: later today only, earliest first, once per lead, with the name', () => {
+    const tasks = [
+      { RelatedEntityId: 'b', RelatedEntityIdName: 'Rahul K', DueDate: '2026-11-03 12:45:00.000' },
+      { RelatedEntityId: 'a', RelatedEntityIdName: 'Amulya Gowda', DueDate: '2026-11-03 11:30:00.000' },
+      { RelatedEntityId: 'a', RelatedEntityIdName: 'Amulya Gowda', DueDate: '2026-11-03 13:00:00.000' },
+      { RelatedEntityId: 'past', RelatedEntityIdName: 'Past', DueDate: '2026-11-03 09:00:00.000' },
+      { RelatedEntityId: 'tomorrow', RelatedEntityIdName: 'Tomorrow', DueDate: '2026-11-03 19:00:00.000' },
+    ];
+    expect(upcomingFollowUps(tasks, NOW)).toEqual([
+      { prospectId: 'a', name: 'Amulya Gowda', dueAt: '2026-11-03T11:30:00.000Z' },
+      { prospectId: 'b', name: 'Rahul K', dueAt: '2026-11-03T12:45:00.000Z' },
+    ]);
+  });
+
+  test('the queue reply carries them; none during a TL rule', async () => {
+    activeRuleFor.mockResolvedValue(null);
+    owned = [];
+    views.openTasks.mockResolvedValue([{ RelatedEntityId: 'a', RelatedEntityIdName: 'Amulya Gowda', DueDate: '2026-11-03 11:30:00.000' }]);
+    const q = await getQueue({ id: 'u80', lsq_user_id: 'L80', groups: [] }, NOW);
+    expect(q.upcoming).toEqual([{ prospectId: 'a', name: 'Amulya Gowda', dueAt: '2026-11-03T11:30:00.000Z' }]);
+    activeRuleFor.mockResolvedValue({ id: 'r8', list_id: 'list8', list_name: 'Dialer – X', start_time: '16:00:00' });
+    listRows = [];
+    expect((await getQueue({ id: 'u81', lsq_user_id: 'L81', groups: [] }, NOW)).upcoming).toEqual([]);
   });
 });
