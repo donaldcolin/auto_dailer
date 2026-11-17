@@ -1,7 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import * as Application from 'expo-application';
-import { ActivityIndicator, Linking, Pressable, StatusBar as RNStatusBar, Text, View } from 'react-native';
+import * as Updates from 'expo-updates';
+import { ActivityIndicator, AppState, Linking, Pressable, StatusBar as RNStatusBar, Text, View } from 'react-native';
 import DialerScreen from './DialerScreen';
 import LoginScreen from './LoginScreen';
 import SetupScreen from './SetupScreen';
@@ -29,6 +30,17 @@ export default function App() {
     fetch(`${process.env.EXPO_PUBLIC_API_URL}/api/app-version`).then((r) => r.json())
       .then(({ build }) => setNewBuild(build > Number(Application.nativeBuildVersion)))
       .catch(() => {}); // offline: check again on next open
+  }, []);
+
+  // An over-the-air update: looked for on open and each time the app comes back, downloaded quietly, then offered.
+  // Restarting is the person's tap, never automatic, so it can't cut into a call or a half-filled form.
+  const { isUpdatePending } = Updates.useUpdates();
+  useEffect(() => {
+    if (!Updates.isEnabled) return; // development builds
+    const look = () => Updates.checkForUpdateAsync().then((r) => r.isAvailable && Updates.fetchUpdateAsync()).catch(() => {});
+    look();
+    const sub = AppState.addEventListener('change', (s) => s === 'active' && look());
+    return () => sub.remove();
   }, []);
 
   const userId = session?.user.id;
@@ -69,6 +81,17 @@ export default function App() {
         >
           <Text style={{ flex: 1, color: colors.text, fontSize: 15 }}>A new version of the app is ready.</Text>
           <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>Update</Text>
+        </Pressable>
+      )}
+      {!newBuild && isUpdatePending && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityHint="Restarts the app on the new version"
+          onPress={() => Updates.reloadAsync().catch(() => {})}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F7F7F7', paddingHorizontal: 24, paddingTop: (RNStatusBar.currentHeight || 24) + 12, paddingBottom: 12 }}
+        >
+          <Text style={{ flex: 1, color: colors.text, fontSize: 15 }}>An update is ready. It takes a second.</Text>
+          <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>Restart</Text>
         </Pressable>
       )}
       {screen}

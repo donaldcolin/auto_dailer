@@ -59,6 +59,29 @@ export default function SettingsScreen({ onClose, chooseSim, onRecordings, onKey
             accessibilityLabel="Open leads on my laptop"
           />
         </View>
+        {!!prefs.autoLaptop && (
+          <>
+            <Text style={styles.hint}>Open each lead</Text>
+            {[['countdown', 'When the countdown starts', 'It\'s up on your laptop before you dial.'], ['call', 'When the call starts', '']].map(([when, label, note]) => {
+              const on = (prefs.laptopWhen || 'call') === when;
+              return (
+                <Pressable
+                  key={when}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: on }}
+                  style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+                  onPress={() => setPrefs(savePrefs({ laptopWhen: when }))}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowText}>{label}</Text>
+                    {!!note && <Text style={styles.meta}>{note}</Text>}
+                  </View>
+                  {on && <Ionicons name="checkmark" size={22} color={colors.text} />}
+                </Pressable>
+              );
+            })}
+          </>
+        )}
 
         <Text style={styles.section}>More</Text>
         {[['mic-outline', 'Call recordings', onRecordings], ['key-outline', 'Update LeadSquared key', onKey]].map(([icon, label, onPress]) => (

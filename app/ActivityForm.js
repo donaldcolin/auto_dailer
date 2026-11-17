@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Dimensions, Keyboard, LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { card, colors } from './ui';
 
@@ -36,6 +36,23 @@ export default function ActivityForm({ form, values, onChange }) {
   const view = useRef({ height: 0, y: 0 });
   const rows = useRef({});
   const set = (schema, v) => onChange(setValue(form, values, schema, v));
+  // The keyboard: the form screen sits in a KeyboardAvoidingView (DialerScreen), which makes room for it; this brings
+  // the field being typed in just above it, which that view doesn't do.
+  const [keyboard, setKeyboard] = useState(0);
+  const [typing, setTyping] = useState(null); // the text field in use
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', (e) => setKeyboard(e.endCoordinates.height));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboard(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  useEffect(() => {
+    const row = typing && rows.current[typing];
+    if (!keyboard || !row) return;
+    row.measureInWindow((x, y, w, h) => {
+      const over = y + h + 16 - (Dimensions.get('window').height - keyboard);
+      if (over > 0) scroll.current?.scrollTo({ y: view.current.y + over });
+    });
+  }, [keyboard, typing]);
   // A dependent dropdown with nothing to offer (e.g. the failure reason on a connected call) is hidden.
   // A field the form's rules hide (another round's fields) is hidden too, as in LSQ's own form.
   const visible = (f) => (!f.dependent || optionsFor(f, values).length > 0) && shown(form.rules, f.schema, values);
@@ -115,7 +132,7 @@ export default function ActivityForm({ form, values, onChange }) {
       );
     }
     return (
-      <View key={f.schema} style={[styles.row, styles.textRow]}>
+      <View key={f.schema} ref={(r) => { rows.current[f.schema] = r; }} collapsable={false} style={[styles.row, styles.textRow]}>
         <Text style={styles.textLabel}>{f.label}</Text>
         <TextInput
           style={styles.input}
@@ -125,6 +142,7 @@ export default function ActivityForm({ form, values, onChange }) {
           placeholderTextColor={colors.muted}
           keyboardType={f.type === 'number' ? 'numeric' : 'default'}
           multiline={f.schema === 'ActivityEvent_Note'}
+          onFocus={() => setTyping(f.schema)}
           accessibilityLabel={f.label}
         />
       </View>

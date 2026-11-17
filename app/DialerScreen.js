@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, LayoutAnimation, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, Easing, Image, KeyboardAvoidingView, LayoutAnimation, Modal, StatusBar, PermissionsAndroid, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import ActivityForm from './ActivityForm';
 import SettingsScreen from './SettingsScreen';
@@ -446,6 +446,17 @@ export default function DialerScreen({ me }) {
     setLeadOpen(false);
     countdownBar.setValue(1);
     setPhase('countdown');
+    // "Open leads on my laptop" at the countdown (Settings): the lead is up on the laptop before the call starts.
+    const prefs = loadPrefs();
+    if (prefs.autoLaptop && prefs.laptopWhen === 'countdown') autoOpenOnLaptop(left[0].prospectId);
+  }
+
+  // Each lead opens on the laptop once, whichever moment the setting picks.
+  const laptopOpened = useRef(null);
+  function autoOpenOnLaptop(prospectId) {
+    if (laptopOpened.current === prospectId) return;
+    laptopOpened.current = prospectId;
+    api(`/api/lead/${encodeURIComponent(prospectId)}/open-on-laptop`, { method: 'POST' }).catch(() => {});
   }
 
   function dial() {
@@ -462,7 +473,7 @@ export default function DialerScreen({ me }) {
     callRef.current = { lead, since: Date.now() - 2000, startedAt: new Date().toISOString(), sawOffhook: false, finishing: false };
     setPhase('calling');
     // Sent before dialing: once the phone app takes the screen, Android may hold this app's requests back.
-    if (prefs.autoLaptop) api(`/api/lead/${encodeURIComponent(lead.prospectId)}/open-on-laptop`, { method: 'POST' }).catch(() => {});
+    if (prefs.autoLaptop) autoOpenOnLaptop(lead.prospectId);
     try {
       Dialer.placeCall(dialable(lead.phone), sims.some((s) => s.id === prefs.simId) ? prefs.simId : null);
     } catch (e) {
@@ -738,7 +749,8 @@ export default function DialerScreen({ me }) {
       </Modal>
 
       {active && marking ? (
-        <View style={styles.mark}>
+        // Android 15 draws apps edge to edge and no longer shrinks them for the keyboard: this does, so the form and Save stay reachable.
+        <KeyboardAvoidingView behavior="padding" style={styles.mark}>
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ expanded: leadOpen }}
@@ -811,7 +823,7 @@ export default function DialerScreen({ me }) {
               <ActivityForm form={form} values={values} onChange={setValues} />
             </View>
           )}
-        </View>
+        </KeyboardAvoidingView>
       ) : phase === 'loading' ? (
         <View style={styles.call} accessibilityLabel="Loading the next lead">
           <Skeleton style={{ width: 90, height: 16, marginBottom: 16 }} />
