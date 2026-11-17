@@ -125,3 +125,50 @@ test('unanswered calls get the placeholder for a mandatory field; connected call
   expect(spoke(toLsqFields(strict, { mx_Custom_1: 'No', spoke: 'Father' }))).toBe('Father');
   expect(() => toLsqFields(strict, { mx_Custom_1: 'Yes' })).toThrow('Spoke with is required');
 });
+
+describe("Sales (286) rules follow ARM Activity V5 on 218", () => {
+  const r = FORMS[286].rules;
+  const sees = (values, schema) => shown(r, schema, values);
+  const STUDENT = ['mx_Custom_4', 'mx_Custom_5', 'mx_Custom_6', 'mx_Custom_35', 'mx_Custom_56', 'mx_Custom_29', 'mx_Custom_58', 'mx_Custom_25'];
+  const APPOINTMENT = ['mx_Custom_50', 'mx_Custom_8', 'mx_Custom_21', 'mx_Custom_28', 'mx_Custom_9'];
+
+  test.each(['Qualification Call', 'Appointment Booking Call'])('%s: connected → spoke with and grade; not connected → reason', (t) => {
+    expect(sees({ mx_Custom_1: t, Status: 'Yes' }, 'mx_Custom_24')).toBe(true);
+    expect(sees({ mx_Custom_1: t, Status: 'Yes' }, 'mx_Custom_2')).toBe(true);
+    expect(sees({ mx_Custom_1: t, Status: 'No' }, 'mx_Custom_24')).toBe(false);
+    expect(sees({ mx_Custom_1: t, Status: 'No' }, 'mx_Custom_3')).toBe(true);
+    expect(sees({ mx_Custom_1: t }, 'mx_Custom_20')).toBe(true); // Follow Up Date
+  });
+
+  test('Qualification: proceed Yes → student details; virtual demo Yes → appointment, No → reason; walk-in Yes → walk-in details', () => {
+    const base = { mx_Custom_1: 'Qualification Call', Status: 'Yes', mx_Custom_46: 'Yes' };
+    STUDENT.forEach(s => expect(sees(base, s)).toBe(true));
+    STUDENT.forEach(s => expect(sees({ ...base, mx_Custom_46: 'No' }, s)).toBe(false));
+    APPOINTMENT.forEach(s => expect(sees({ ...base, mx_Custom_58: 'Yes' }, s)).toBe(true));
+    APPOINTMENT.forEach(s => expect(sees({ ...base, mx_Custom_58: 'No' }, s)).toBe(false));
+    expect(sees({ ...base, mx_Custom_58: 'No' }, 'mx_Custom_36')).toBe(true);
+    expect(sees({ ...base, mx_Custom_25: 'Yes' }, 'mx_Custom_26')).toBe(true);
+    expect(sees({ ...base, mx_Custom_25: 'No' }, 'mx_Custom_27')).toBe(false);
+  });
+
+  test('Appointment Confirmation: type of booking and whether it is confirmed, no student details', () => {
+    const base = { mx_Custom_1: 'Appointment Confirmation Call', mx_Custom_46: 'Yes' };
+    expect(sees(base, 'mx_Custom_50')).toBe(true);
+    expect(sees(base, 'mx_Custom_12')).toBe(true);
+    expect(sees(base, 'mx_Custom_4')).toBe(false);
+    expect(sees(base, 'mx_Custom_20')).toBe(false);
+  });
+
+  test('Demo Conducted and Conversion call show their own sections', () => {
+    ['mx_Custom_30', 'mx_Custom_22', 'mx_Custom_44', 'mx_Custom_45', 'mx_Custom_32', 'mx_Custom_31']
+      .forEach(s => expect(sees({ mx_Custom_1: 'Demo Conducted', mx_Custom_46: 'Yes' }, s)).toBe(true));
+    expect(sees({ mx_Custom_1: 'Qualification Call', mx_Custom_46: 'Yes' }, 'mx_Custom_30')).toBe(false);
+    ['mx_Custom_23', 'mx_Custom_15'].forEach(s => expect(sees({ mx_Custom_1: 'Conversion call', mx_Custom_46: 'Yes' }, s)).toBe(true));
+    expect(sees({ mx_Custom_1: 'Conversion call' }, 'mx_Custom_20')).toBe(true);
+  });
+
+  test('always there: activity type, call connected, streams, notes, proceed', () => {
+    ['mx_Custom_1', 'Status', 'mx_Custom_19', 'ActivityEvent_Note', 'mx_Custom_46']
+      .forEach(s => expect(sees({ mx_Custom_1: 'Demo Conducted' }, s)).toBe(true));
+  });
+});

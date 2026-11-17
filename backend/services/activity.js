@@ -17,6 +17,30 @@ function shown(rules, schema, values) {
   const own = (rules || []).filter(r => r.show.includes(schema));
   return !own.length || own.some(r => Object.entries(r.when).every(([k, v]) => (v === true ? !!values[k] : values[k] === v)));
 }
+// Sales form rules (286), copied from "ARM Activity V5" on BDA Activity 218 (screenshots, 2026-11-17). Appointment
+// Booking Call follows Qualification Call (Donald). Call Connected is always on the dialer's form: it comes from the call.
+const SALES_STUDENT = ['mx_Custom_4', 'mx_Custom_5', 'mx_Custom_6', 'mx_Custom_35', 'mx_Custom_56', 'mx_Custom_29', 'mx_Custom_58', 'mx_Custom_25'];
+const SALES_APPOINTMENT = ['mx_Custom_50', 'mx_Custom_8', 'mx_Custom_21', 'mx_Custom_28', 'mx_Custom_9'];
+const SALES_DEMO = ['mx_Custom_30', 'mx_Custom_22', 'mx_Custom_44', 'mx_Custom_45', 'mx_Custom_32', 'mx_Custom_31'];
+const qualifying = type => [
+  { when: { mx_Custom_1: type, Status: 'Yes' }, show: ['mx_Custom_24', 'mx_Custom_2'] }, // Spoke with, Student Grade
+  { when: { mx_Custom_1: type }, show: ['mx_Custom_20'] }, // Follow Up Date
+  { when: { mx_Custom_1: type, mx_Custom_46: 'Yes' }, show: SALES_STUDENT }, // Proceed with student details
+  { when: { mx_Custom_1: type, mx_Custom_46: 'Yes', mx_Custom_58: 'Yes' }, show: SALES_APPOINTMENT }, // Virtual Demo
+  { when: { mx_Custom_1: type, mx_Custom_46: 'Yes', mx_Custom_58: 'No' }, show: ['mx_Custom_36'] }, // Reason for No Interest in VD
+  { when: { mx_Custom_1: type, mx_Custom_46: 'Yes', mx_Custom_25: 'Yes' }, show: ['mx_Custom_26', 'mx_Custom_27'] }, // Walk-in
+];
+const SALES_RULES = [
+  { when: { Status: 'No' }, show: ['mx_Custom_3'] }, // Reason of call failure
+  ...qualifying('Qualification Call'),
+  ...qualifying('Appointment Booking Call'),
+  { when: { mx_Custom_1: 'Appointment Confirmation Call', mx_Custom_46: 'Yes' }, show: ['mx_Custom_50', 'mx_Custom_12'] },
+  // shortcut: only the Demo Conducted fields seen so far; the rest of that section is still under "More fields".
+  { when: { mx_Custom_1: 'Demo Conducted', mx_Custom_46: 'Yes' }, show: SALES_DEMO },
+  { when: { mx_Custom_1: 'Conversion call' }, show: ['mx_Custom_20'] },
+  { when: { mx_Custom_1: 'Conversion call', mx_Custom_46: 'Yes' }, show: ['mx_Custom_23', 'mx_Custom_15'] },
+];
+
 const FORMS = {
   284: { // Auto Dialer - HR activity: HR Activity's fields, but Function is mx_Custom_7 and Task Status mx_Custom_8 here
     // Same sections as "HR Activity form V1" in LSQ; `rules` shows each round's fields the way that form's rules do.
@@ -61,7 +85,16 @@ const FORMS = {
   // Auto Dailer - BDA activity (2026-11-14): 218's fields under different numbers, so the dialer's calls can be told
   // apart. "Spoke with" is optional here, so unanswered calls no longer need a placeholder.
   286: {
-    sections: [[null, ['mx_Custom_1', 'Status', 'mx_Custom_3', 'mx_Custom_24', 'mx_Custom_2', 'ActivityEvent_Note', 'mx_Custom_20']]],
+    // Same sections as "ARM Activity V5" in LSQ; `rules` shows each one the way that form does.
+    sections: [
+      ['Lead Details', ['mx_Custom_1', 'Status', 'mx_Custom_3', 'mx_Custom_24', 'mx_Custom_2', 'mx_Custom_19', 'ActivityEvent_Note', 'mx_Custom_20', 'mx_Custom_46']],
+      ['Student Details', [...SALES_STUDENT.slice(0, 7), 'mx_Custom_36', 'mx_Custom_25']],
+      ['Walk-In Details', ['mx_Custom_26', 'mx_Custom_27']],
+      ['Appointment Details', [...SALES_APPOINTMENT, 'mx_Custom_12']],
+      ['Demo Conducted', SALES_DEMO],
+      ['Conversion call', ['mx_Custom_23', 'mx_Custom_15']],
+    ],
+    rules: SALES_RULES,
     sticky: ['mx_Custom_1'],
     defaults: { mx_Custom_1: 'Qualification Call' },
     alwaysBlank: ['mx_Custom_34'], // Prep. for which entrance: LSQ filled "JEE" into it on 218 when left out
