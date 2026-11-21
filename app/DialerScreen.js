@@ -181,7 +181,7 @@ export default function DialerScreen({ me }) {
     setMenuOpen(false);
     Alert.alert('Sign out?', 'You can sign in again with Google.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: () => supabase.auth.signOut() },
+      { text: 'Sign out', style: 'destructive', onPress: () => supabase.auth.signOut({ scope: 'local' }) },
     ]);
   }
 

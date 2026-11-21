@@ -31,7 +31,8 @@ const MAX_PAGES = 10;
 const _cache = new Map(); // 'list:<id>' | 'owner:<lsqUserId>' | 'pushes' | 'pushed-leads' -> { leads, expires } or { pending }
 
 const istTime = s => new Date(`${s.replace(' ', 'T')}Z`) // LSQ dates are UTC "YYYY-MM-DD HH:mm:ss"
-  .toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  .toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+  .replace(/\b(AM|PM)\b/, (m) => m.toLowerCase()); // newer Node writes "PM"; the app shows "pm" everywhere
 
 // What the caller sees about a lead before and after the call, as label/value rows; empty fields are left out.
 function details(p) {

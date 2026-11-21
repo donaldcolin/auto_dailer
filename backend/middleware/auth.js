@@ -17,7 +17,8 @@ async function verifySupabaseToken(token) {
   if (hit && hit.expires > now) return hit.user;
 
   const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data?.user) return null;
+  // Why a sign-in was refused (never the token): an expired session, a network failure to Supabase, a bad header…
+  if (error || !data?.user) { console.warn('[auth] refused:', error?.status || '-', error?.code || error?.name || '', String(error?.message || 'no user').slice(0, 100), token === 'undefined' ? '(no session on the phone)' : ''); return null; }
 
   if (_userCache.size > 1000) _userCache.clear();
   _userCache.set(token, { user: data.user, expires: now + TOKEN_CACHE_TTL_MS });

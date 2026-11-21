@@ -64,7 +64,7 @@ export default function App() {
       <View style={center}>
         <Text style={{ color: colors.text, fontSize: 15, textAlign: 'center' }}>{meError}</Text>
         <Btn title="Try again" onPress={loadMe} />
-        <Text style={{ color: colors.muted, fontSize: 15 }} onPress={() => supabase.auth.signOut()}>Sign out</Text>
+        <Text style={{ color: colors.muted, fontSize: 15 }} onPress={() => supabase.auth.signOut({ scope: 'local' })}>Sign out</Text>
       </View>
     );
   } else if (!me) screen = <View style={center}><ActivityIndicator /></View>;

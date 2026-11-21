@@ -67,7 +67,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     status: async () => ({ email: (await db.auth.getSession()).data.session?.user.email || null }),
     // The popup closes when Google's window opens; a second click joins the open sign-in instead of starting another.
     signIn: async () => { signingIn ||= signIn().finally(() => { signingIn = null; }); await signingIn; return {}; },
-    signOut: async () => { await db.auth.signOut(); await connect(); return {}; },
+    // This laptop only: a global sign-out would also end the person's phone session.
+    signOut: async () => { await db.auth.signOut({ scope: 'local' }); await connect(); return {}; },
   }[msg.type];
   if (!run) return false;
   run().then(reply, e => reply({ error: e.message }));

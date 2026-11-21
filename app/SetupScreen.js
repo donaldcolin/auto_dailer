@@ -113,7 +113,7 @@ export default function SetupScreen({ me, keysOnly, onDone, onCancel }) {
           ? <Text style={styles.link} onPress={onCancel}>Cancel</Text>
           : step === 2 && !lockedTeam
             ? <Text style={styles.link} onPress={() => { setError(null); setStep(1); }}>Back</Text>
-            : <Text style={styles.link} onPress={() => supabase.auth.signOut()}>Sign out</Text>}
+            : <Text style={styles.link} onPress={() => supabase.auth.signOut({ scope: 'local' })}>Sign out</Text>}
       </View>
     </KeyboardAvoidingView>
   );
